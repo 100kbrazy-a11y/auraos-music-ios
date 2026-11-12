@@ -135,7 +135,7 @@ export async function readZip(file) {
         const lh = new DataView(await file.slice(lo, lo + 30).arrayBuffer());
         const start = lo + 30 + lh.getUint16(26, true) + lh.getUint16(28, true);
         const raw = file.slice(start, start + csize);
-        if (method === 0) return raw;
+        if (method === 0) return raw.realize ? raw.realize() : raw;        // (read from disk: fetch just this entry)
         if (method === 8) return new Response(raw.stream().pipeThrough(new DecompressionStream("deflate-raw"))).blob();
         throw new Error("Unsupported compression in " + name);
       },

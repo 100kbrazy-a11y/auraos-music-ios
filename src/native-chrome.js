@@ -2,6 +2,7 @@
 // This side tells it what to show and hears back what was tapped or dragged. Anywhere else (Android, browsers)
 // it stays off and the web versions are used.
 import { Capacitor, registerPlugin } from "@capacitor/core";
+import { diag, timed } from "./diag.js";
 
 const NC = registerPlugin("NativeChrome");
 const SYMBOLS = { albums: "square.stack.fill", artists: "music.mic", songs: "music.note", playlists: "music.note.list", browse: "safari" };
@@ -24,6 +25,24 @@ export const nc = {
     const diff = {};
     for (const [k, v] of Object.entries(o)) if (this.last[k] !== v) { diff[k] = v; this.last[k] = v; }
     if (Object.keys(diff).length) NC.update(diff).catch(() => {});
+  },
+  /** The page's top bar, read from its web header: the native glass bar draws it, taps come back as headAction / back. */
+  header(page, scrolled) {
+    if (!this.on || !page) return;
+    const head = page.querySelector(".head");
+    if (!head) return;
+    const actions = [...head.querySelectorAll(":scope > button:not(.back)")].map((b) => ({
+      symbol: SF[b.querySelector("svg[data-n]")?.dataset.n] || "circle",
+      label: b.querySelector("span")?.textContent || b.getAttribute("aria-label") || "",
+      text: b.classList.contains("hbtn"),
+      prominent: b.classList.contains("hbtn") && !b.classList.contains("tonal"),
+      on: b.classList.contains("on"),
+    }));
+    const m = { title: head.querySelector("h1")?.textContent || "", back: !!head.querySelector(".back"), scrolled: !!scrolled, actions };
+    const key = JSON.stringify(m);
+    if (key === this.lastHead) return;
+    this.lastHead = key;
+    NC.header(m).catch(() => {});
   },
   hide() { if (!this.on) return; this.last.visible = false; NC.update({ visible: false }).catch(() => {}); },
   show(bounce) { if (!this.on) return; this.last.visible = true; NC.update({ visible: true, bounce: !!bounce }).catch(() => {}); },
@@ -54,17 +73,38 @@ export const nc = {
     this.last.artKey = key;
     NC.update({ artKey: key, art: b64 }).catch(() => {});
   },
+  /** iPhone: pick music packs in the Files browser; read from disk in pieces. */
+  async pickPacks() {
+    const { DiskFile } = await import("./files.js");
+    const r = await NC.pickAudio({ kind: "pack" });
+    diag.log(`picked ${(r?.files || []).length} pack(s)`);
+    return (r?.files || []).map((f) => new DiskFile(Capacitor.convertFileSrc(f.path), f.size || 0, f.name));
+  },
+  async settings(sections, open) {
+    if (this.on) await NC.settings({ sections, open: !!open }).catch((e) => console.warn("settings", e));
+  },
   /** iPhone: pick music in the Files browser. Resolves to File objects (copies the picker made for us). */
   async pickAudio() {
-    const r = await NC.pickAudio();
+    const r = await NC.pickAudio({ kind: "audio" });
     const out = [];
+    diag.log(`picked ${(r?.files || []).length} file(s)`);
     for (const f of r?.files || []) {
+      let b = null;
       try {
-        const res = await fetch(Capacitor.convertFileSrc(f.path));
-        if (!res.ok) continue;
-        const b = await res.blob();
-        out.push(new File([b], f.name, { type: b.type && b.type !== "application/octet-stream" ? b.type : "" }));
-      } catch (e) { console.warn("couldn't read", f.name, e); }
+        // ask for a byte range: for music files the app's file server only gives a proper reply to range requests
+        const res = await timed(fetch(Capacitor.convertFileSrc(f.path), { headers: { Range: "bytes=0-" } }), 60000, `Opening ${f.name}`);
+        if (res.ok || res.status === 0) b = await res.blob();
+        diag.log(`read ${f.name}: status ${res.status}, ${b ? Math.round(b.size / 1024) + " KB" : "nothing"}`);
+      } catch (e) { console.warn("couldn't fetch", f.name, e); }
+      if (!b || !b.size) {
+        try {                                      // second way in: the Filesystem plugin
+          const { Filesystem } = await import("@capacitor/filesystem");
+          const { data } = await timed(Filesystem.readFile({ path: f.path }), 90000, `Reading ${f.name}`);
+          b = typeof data === "string" ? await (await fetch("data:application/octet-stream;base64," + data)).blob() : data;
+          diag.log(`read ${f.name} another way: ${Math.round(b.size / 1024)} KB`);
+        } catch (e) { console.warn("couldn't read", f.name, e); }
+      }
+      if (b && b.size) out.push(new File([b], f.name, { type: b.type && !/octet-stream/.test(b.type) ? b.type : "" }));
     }
     return out;
   },
@@ -81,10 +121,19 @@ export const nc = {
   },
 };
 
+// the app's icon names → SF Symbols
+const SF = { play: "play.fill", pause: "pause.fill", next: "forward.fill", prev: "backward.fill", shuffle: "shuffle", repeat: "repeat", repeat1: "repeat.1",
+  heart: "heart", heartf: "heart.fill", lyrics: "quote.bubble", queue: "list.bullet", more: "ellipsis", search: "magnifyingglass",
+  settings: "gearshape", back: "chevron.backward", down: "chevron.down", add: "plus", album: "square.stack", artist: "music.mic", note: "music.note",
+  playlist: "music.note.list", share: "square.and.arrow.up", trash: "trash", check: "checkmark", close: "xmark", eq: "slider.horizontal.3",
+  pack: "shippingbox", playnext: "text.insert", addq: "text.append", image: "photo", info: "info.circle", spark: "sparkles", edit: "pencil",
+  globe: "globe", history: "clock.arrow.circlepath", browse: "safari", chevron: "chevron.right", logout: "rectangle.portrait.and.arrow.right",
+  filter: "line.3.horizontal.decrease", folder: "folder", select: "checkmark.circle" };
+export const sfSymbol = (name) => SF[name] || "circle";
 const SYM = { trash: "trash", delete: "trash", remove: "minus.circle", play: "play.fill", next: "text.insert", queue: "text.append",
   playlist: "music.note.list", add: "plus", heart: "heart", heartOn: "heart.fill", edit: "pencil", album: "square.stack", artist: "music.mic",
   share: "square.and.arrow.up", info: "info.circle", search: "magnifyingglass", shuffle: "shuffle", download: "arrow.down.circle", radio: "dot.radiowaves.left.and.right" };
-export const symbolFor = (icon) => SYM[icon] || null;
+export const symbolFor = (icon) => SF[icon] || SYM[icon] || null;
 
 let probe;
 function cssRgb(css) {

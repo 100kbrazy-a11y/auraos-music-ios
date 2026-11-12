@@ -35,8 +35,16 @@ The floating parts are native iPhone views using Apple's own Liquid Glass (`ios-
 - the media bar + tabs bubble (upright), and the tab pill + media bubble (sideways), with the same gestures:
   tap to open, swipe sideways to skip, drag up to grow the player, touch-and-slide the tab highlight, tucking
 - play / pause is a system glass button; the glass picks up the song's colour
+- while your finger is on the tabs, a clear glass lens rides over the icons and titles, bending them, and the tab under it grows a little
+- the top bar: the page's buttons are glass (icon buttons share one capsule; Play is tinted), and once you scroll a full-width
+  glass bar with the page title fades in and the page scrolls under it
+- the bubble and the top bar step aside while a sheet (filters, EQ…) or selection mode is open
+- Settings is a real iOS screen: it slides in like a pushed page, with the system's glass back button (and edge swipe),
+  native switches, the crossfade slider, a segmented Scroll Timers control and an EQ preset menu with its graph
+- Add Music Pack uses Apple's Files browser too, and packs are read from disk piece by piece (never loaded whole)
 - song menus, confirmations and rename boxes are the system's glass menus and alerts
 - Add Songs opens Apple's Files browser, showing music files only
+- Settings › Diagnostics shows what the app did recently (imports step by step, errors), with a Copy button
 
 The web screens underneath still decide sizes and positions, and the visualizer still draws under the glass.
 On iOS versions before 26 the same views use the standard frosted blur.

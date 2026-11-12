@@ -779,3 +779,20 @@ html.ios .page { -webkit-overflow-scrolling: touch; }
 html.native-chrome #dock, html.native-chrome #mini, html.native-chrome #tabs { visibility: hidden; }
 html.native-chrome #dock .tviz, html.native-chrome #mini canvas { visibility: visible; }
 html.native-chrome #dock::before, html.native-chrome #dock::after, html.native-chrome #tabs::after { display: none; }
+
+/* Settings › Diagnostics */
+#sheet pre.diag { max-height: 52vh; overflow: auto; margin: 0; padding: 10px 12px; border-radius: 12px; background: rgba(0, 0, 0, .35);
+  font: 11px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; user-select: text; -webkit-user-select: text; }
+
+/* iPhone native top bar: the web header keeps its big title and spacing; the native glass bar draws the buttons,
+   and once scrolled the glass slab with the title */
+html.native-chrome .head > button { visibility: hidden; }
+html.native-chrome .page.scrolled .head { background: none; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+html.native-chrome .page.scrolled .head h1 { visibility: hidden; }
+
+/* sideways: the top bar reaches all the way across (under the tab pill too), and the content keeps clear of the camera cutout */
+@media (orientation: landscape) and (min-width: 640px) {
+  .page { padding-left: var(--safe-l); }
+  .head { margin-left: calc(-1 * var(--safe-l)); margin-right: calc(-1 * (var(--rail) + 22px + var(--safe-r)));
+    padding-right: calc(8px + var(--rail) + 22px + var(--safe-r)); }
+}

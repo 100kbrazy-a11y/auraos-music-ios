@@ -2,6 +2,7 @@ import { idb } from "./store.js";
 import { readTags, squareJpeg, coverColor, organizedPath, extOf, isAudio, safeName, primaryArtist, probeDuration } from "./tags.js";
 import { buildZip, readZip } from "./zip.js";
 import { putSongFile, songBlob, delSongFile, songURL } from "./files.js";
+import { diag, timed } from "./diag.js";
 
 export const PACK_FORMAT = "auraos-musicpack";
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -122,16 +123,18 @@ class Library extends EventTarget {
 
   /** Add one audio blob with info (from the file's tags, optionally overridden). Returns {song, skipped}. */
   async addAudio(blob, name, override = {}, folderCover = null) {
-    const { tags, picture } = await readTags(blob, name);
+    diag.step = `Reading tags · ${name}`;
+    const { tags, picture } = await timed(readTags(blob, name), 60000, `Reading the tags of ${name}`);
     for (const [k, v] of Object.entries(override)) if (v !== undefined && v !== null && v !== "") tags[k] = v;
-    if (!tags.duration) tags.duration = await probeDuration(blob);
+    if (!tags.duration) { diag.step = `Measuring · ${name}`; tags.duration = await probeDuration(blob); }
     const dup = this.existing(tags);
     if (dup) return { song: dup, skipped: true };
     const ext = extOf(name) || "mp3";
     const file = this.uniqueFile(organizedPath(tags, ext));
     const type = blob.type || mimeFor(ext);
     const song = { id: uid(), file, ...tags, size: blob.size, added: Date.now(), type };
-    song.cover = await this.storeCover(tags, picture || folderCover);
+    diag.step = `Cover · ${name}`;
+    song.cover = await timed(this.storeCover(tags, picture || folderCover), 30000, `Saving the cover of ${name}`);
     song.store = await putSongFile(blob.type ? blob : new Blob([blob], { type }), file);
     await idb.put("songs", song);
     this.songs.set(song.id, song);
@@ -152,6 +155,7 @@ class Library extends EventTarget {
         r.skipped ? skipped++ : (added++, songs.push(r.song));
       } catch (e) {
         console.warn("import failed", audio[i].name, e);
+        diag.log(`import: failed ${audio[i].name}: ${e?.message || e}`);
         failed++;
       }
     }
@@ -161,7 +165,9 @@ class Library extends EventTarget {
 
   // ------------------------------------------------------------ music packs (same format as the desktop app)
   async importPack(file, onProgress) {
-    const entries = await readZip(file);
+    diag.set(`pack: ${file.name} (${Math.round((file.size || 0) / 1048576)} MB)`);
+    const entries = await timed(readZip(file), 120000, "Reading the pack's contents");
+    diag.log(`pack: ${entries.length} entries`);
     const man = entries.find((e) => e.name === "musicpack.json");
     let manifest = {};
     if (man) { try { manifest = JSON.parse(await (await man.blob()).text()); } catch {} }
@@ -186,6 +192,7 @@ class Library extends EventTarget {
         order.push(r.song.id);
       } catch (err) {
         console.warn("pack: couldn't add", e.name, err);
+        diag.log(`pack: failed ${e.name}: ${err?.message || err}`);
         failed++;
       }
     }

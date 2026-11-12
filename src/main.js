@@ -7,6 +7,8 @@ import { LyricsView, fetchLyrics, searchLyrics, cleanTitle } from "./lyrics.js";
 import { persistStorage, usage } from "./store.js";
 import { squareJpeg, coverColor } from "./tags.js";
 import { idb } from "./store.js";
+import { diag } from "./diag.js";
+import { DiskFile } from "./files.js";
 import { nc, symbolFor } from "./native-chrome.js";
 import { search as searchOnline, details as resultDetails, bestSongMatch, bestAlbumMatch, same } from "./lookup.js";
 
@@ -46,7 +48,7 @@ const ICONS = {
 function icon(name, cls = "") {
   const [d, fill] = ICONS[name] || ICONS.note;
   const w = document.createElement("span");
-  w.innerHTML = `<svg class="i ${fill ? "fill" : ""} ${cls}" viewBox="0 0 24 24"${name === "more" ? ' style="stroke-width:3.2"' : ""}><path d="${d}"/></svg>`;
+  w.innerHTML = `<svg data-n="${name}" class="i ${fill ? "fill" : ""} ${cls}" viewBox="0 0 24 24"${name === "more" ? ' style="stroke-width:3.2"' : ""}><path d="${d}"/></svg>`;
   return w.firstChild;
 }
 function h(tag, a = {}, ...kids) {
@@ -122,6 +124,7 @@ function openSheet(content, { dialog = false, onClose } = {}) {
   if (!dialog) sh.append(h("div", { class: "grab" }));
   sh.append(content);
   sh.hidden = scrim.hidden = false;
+  nc.update({ covered: true });            // the native bubble / top bar step aside while a sheet is open
   sheetClose = onClose || null;
   scrim.onclick = () => closeSheet();
 }
@@ -129,6 +132,7 @@ function closeSheet(silent) {
   const sh = $("#sheet");
   if (sh.hidden) return false;
   sh.hidden = $("#scrim").hidden = true;
+  queueMicrotask(() => { if ($("#sheet").hidden) nc.update({ covered: !!sel }); });   // (not when another sheet opens straight away)
   sh.innerHTML = "";
   const f = sheetClose; sheetClose = null;
   if (!silent) f?.();
@@ -176,10 +180,21 @@ function confirmBox(title, message, ok = "Remove") {
   });
 }
 function progressBox(title) {
-  const bar = h("b"), txt = h("p", {}, "Starting…");
-  openSheet(h("div", {}, h("h3", {}, title), h("div", { class: "progress" }, bar), txt), { dialog: true });
+  const bar = h("b"), txt = h("p", {}, "Starting…"), step = h("div", { class: "suffix" });
+  openSheet(h("div", {}, h("h3", {}, title), h("div", { class: "progress" }, bar), txt, step), { dialog: true });
   $("#scrim").onclick = null;
-  return { set(f, t) { bar.style.width = Math.round(f * 100) + "%"; if (t) txt.textContent = t; }, close() { closeSheet(true); } };
+  diag.step = ""; diag.log("progress: " + title);
+  const tick = setInterval(() => { if (step.textContent !== diag.step) step.textContent = diag.step; }, 250);   // what it's doing right now
+  return { set(f, t) { bar.style.width = Math.round(f * 100) + "%"; if (t) txt.textContent = t; }, close() { clearInterval(tick); diag.step = ""; closeSheet(true); } };
+}
+function showDiagnostics() {
+  const pre = h("pre", { class: "diag" }, diag.text() || "Nothing logged yet.");
+  openSheet(h("div", {}, h("h3", {}, "Diagnostics"), h("p", {}, "What the app did recently. Copy it and send it along when something goes wrong."), pre,
+    h("div", { class: "btns" },
+      h("button", { class: "btn text", onclick: () => { diag.clear(); pre.textContent = "Cleared."; } }, "Clear"),
+      h("button", { class: "btn", onclick: async () => { try { await navigator.clipboard.writeText(diag.text()); snack("Copied"); } catch { snack("Couldn't copy — select the text instead"); } } }, "Copy"))),
+  { dialog: true });
+  setTimeout(() => { pre.scrollTop = pre.scrollHeight; }, 30);
 }
 
 // ============================================================ navigation
@@ -410,6 +425,7 @@ function show(dir) {
   $("#pages").append(el);
   pageEl = el;
   markTab();
+  nc.header(el, el.classList.contains("scrolled"));
   if (old) {
     if (motion() && dir) {
       const [ax, ay] = { left: [1, 0], right: [-1, 0], up: [0, 1], down: [0, -1] }[dir];
@@ -476,7 +492,10 @@ function goTab(id) {
   stack = [{ type: id }];
   show(to >= from ? "left" : "right");
 }
-function push(page) { if (sel) endSelect(); stack.push(page); show("left"); }
+function push(page) {
+  if (page.type === "settings" && nc.on) return openNativeSettings();     // iPhone: a real iOS Settings screen
+  if (sel) endSelect(); stack.push(page); show("left");
+}
 function pop() { if (stack.length > 1) { stack.pop(); show("right"); return true; } return false; }
 function refresh() {
   if (!pageEl) return;
@@ -494,9 +513,16 @@ function pageShell(title, { back = stack.length > 1, actions = [] } = {}) {
   const page = h("div", { class: "page" });
   const head = h("div", { class: "head" }, back && h("button", { class: "ib back", onclick: pop }, icon("back")), h("h1", {}, title), ...actions.filter(Boolean));
   page.append(head);
+  if (nc.on) {                    // iPhone: the native glass top bar mirrors this header
+    let t = 0;
+    new MutationObserver(() => { clearTimeout(t); t = setTimeout(() => { if (page === pageEl) nc.header(page, page.classList.contains("scrolled")); }, 30); })
+      .observe(head, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["class"] });
+  }
   let lastTop = 0;
   page.addEventListener("scroll", () => {
+    const was = page.classList.contains("scrolled");
     page.classList.toggle("scrolled", page.scrollTop > 8);
+    if (nc.on && was !== page.scrollTop > 8 && page === pageEl) nc.header(page, page.scrollTop > 8);
     if (Math.abs(page.scrollTop - lastTop) > 4 && performance.now() > quietScrollUntil) miniTuck.scrolled();
     lastTop = page.scrollTop;
   }, { passive: true });
@@ -650,6 +676,7 @@ function render(p) {
 // ============================================================ selection
 function startSelect(kind, id) {
   sel = { kind, ids: new Set([id]) };
+  nc.update({ covered: true });
   refresh();
   updateSelbar();
 }
@@ -661,6 +688,7 @@ function toggleSel(id) {
 }
 function endSelect() {
   sel = null;
+  nc.update({ covered: false });
   $("#selbar").hidden = true;
   refresh();
 }
@@ -729,7 +757,7 @@ function emptyLibrary() {
   return h("div", { class: "empty" }, h("div", { class: "big" }, icon("note")), h("h3", {}, "Add your music"),
     h("div", {}, "Pick songs from your phone, or add a music pack someone shared with you."),
     h("div", { class: "acts" }, h("button", { class: "btn", onclick: pickSongs }, icon("add"), "Add Songs"),
-      h("button", { class: "btn tonal", onclick: () => $("#pickPack").click() }, icon("pack"), "Add a Music Pack")));
+      h("button", { class: "btn tonal", onclick: pickPacks }, icon("pack"), "Add a Music Pack")));
 }
 
 // ============================================================ pages
@@ -919,6 +947,68 @@ function pageSearch(state) {
   return p;
 }
 
+// ---- iPhone: Settings as a native screen. Same settings, described here; the screen sends back changes and taps.
+function settingsModel(sizeText) {
+  const s = lib.meta.settings;
+  const missingGenres = [...lib.songs.values()].filter((x) => !genresOf(x).length).length;
+  const eqVals = EQ_PRESETS[s.eq] || EQ_PRESETS.Flat;
+  return [
+    { title: "Your Music", rows: [
+      { id: "add", type: "action", symbol: "plus", title: "Add Songs", subtitle: "Pick music files from your phone" },
+      { id: "pack", type: "action", symbol: "shippingbox", title: "Add Music Pack", subtitle: "Add a …-musicpack.zip someone shared with you" },
+      { id: "covers", type: "action", symbol: "globe", title: "Find Missing Covers", subtitle: "Look up album art online" },
+      { id: "genres", type: "action", symbol: "magnifyingglass", title: "Find Genres", subtitle: missingGenres ? `Look up genres online for ${plural(missingGenres, "song")} that don't have one` : "Every song has a genre" },
+      { id: "autofill", type: "toggle", symbol: "wand.and.stars", title: "Fill In Song Info Automatically", subtitle: "When you add songs, look up missing albums, years, genres and covers", value: s.autofill !== false },
+      { id: "library", type: "info", symbol: "folder", title: "Library", subtitle: sizeText || `${plural(lib.songs.size, "song")} · ${plural(lib.albums.length, "album")}` },
+      { id: "diag", type: "action", symbol: "info.circle", title: "Diagnostics", subtitle: "What the app did recently, for troubleshooting" },
+    ] },
+    { title: "Playback", rows: [
+      { id: "crossfade", type: "slider", symbol: "list.bullet", title: "Crossfade", subtitle: "Blend the end of each song into the next", min: 0, max: 12, value: +s.crossfade || 0, unit: "s", zero: "Off" },
+      { id: "lyricReturn", type: "choice", symbol: "quote.bubble", title: "Scroll Timers", subtitle: "After you stop scrolling, lyrics glide back to the current line and the player comes back (sideways) after",
+        value: +s.lyricReturn || 1.5, options: [1, 1.5, 2, 3, 5, 10].map((v) => ({ label: `${v}s`, value: v })) },
+      { id: "tuckPinned", type: "toggle", symbol: "rectangle.bottomhalf.inset.filled", title: "Keep Media Bar Tucked", subtitle: "Sideways: keep the media bar tucked under the tabs as just the album cover", value: !!s.tuckPinned },
+    ] },
+    { title: "Equalizer", rows: [
+      { id: "eqgraph", type: "eq", values: eqVals, labels: EQ_BANDS.map((f) => (f >= 1000 ? f / 1000 + "k" : String(f))) },
+      { id: "eq", type: "menu", symbol: "slider.horizontal.3", title: "Preset", value: s.eq && EQ_PRESETS[s.eq] ? s.eq : "Flat", options: Object.keys(EQ_PRESETS) },
+    ] },
+    { title: "Look & Feel", rows: [
+      { id: "motion", type: "toggle", symbol: "sparkles", title: "Motion Effects", subtitle: "Sliding pages, glow, living background", value: motion() },
+    ] },
+    { title: "Storage", footer: "AuraOS Music for iPhone · music packs work with the desktop and Android apps too", rows: [
+      { id: "removeAll", type: "action", symbol: "trash", title: "Remove All Music", subtitle: "Deletes the songs stored in this app", destructive: true, stay: true },
+    ] },
+  ];
+}
+function openNativeSettings() {
+  nc.settings(settingsModel(), true);
+  usage().then((u) => { if (u.usage) nc.settings(settingsModel(`${plural(lib.songs.size, "song")} · ${plural(lib.albums.length, "album")} · ${fmtSize(u.usage)} used`)); });
+}
+function applySetting(id, v) {
+  const s = lib.meta.settings;
+  if (id === "autofill") s.autofill = !!v;
+  else if (id === "tuckPinned") { miniTuck.pin(!!v); return; }
+  else if (id === "motion") { s.motion = !!v; document.body.classList.toggle("nomotion", !motion()); }
+  else if (id === "crossfade") s.crossfade = +v || 0;
+  else if (id === "lyricReturn") s.lyricReturn = +v || 1.5;
+  else if (id === "eq") { player.applyEq(String(v)); nc.settings(settingsModel()); }
+  lib.saveMeta();
+}
+async function settingAction(id) {
+  if (id === "add") pickSongs();
+  else if (id === "pack") pickPacks();
+  else if (id === "covers") findCovers(true);
+  else if (id === "genres") findGenres();
+  else if (id === "diag") showDiagnostics();
+  else if (id === "removeAll") {
+    if (!lib.songs.size) return;
+    if (await confirmBox("Remove all music?", `This deletes all ${plural(lib.songs.size, "song")} from this app. Music packs and files on your phone aren't touched.`, "Remove All")) {
+      player.pause(); await lib.removeSongs([...lib.songs.keys()]); player.queue = []; player.index = -1; updateMini(); refresh(); snack("Removed all music");
+      nc.settings(settingsModel());
+    }
+  }
+}
+
 function pageSettings() {
   const p = pageShell("Settings");
   const s = lib.meta.settings;
@@ -928,12 +1018,13 @@ function pageSettings() {
   };
   const libGroup = h("div", { class: "group" }, h("h4", {}, "Your Music"),
     item("add", "Add Songs", "Pick music files from your phone", pickSongs),
-    item("pack", "Add Music Pack", "Add a …-musicpack.zip someone shared with you", () => $("#pickPack").click()),
+    item("pack", "Add Music Pack", "Add a …-musicpack.zip someone shared with you", pickPacks),
     item("globe", "Find Missing Covers", "Look up album art online", () => findCovers(true)),
     item("search", "Find Genres", (() => { const n = [...lib.songs.values()].filter((x) => !genresOf(x).length).length; return n ? `Look up genres online for ${plural(n, "song")} that don't have one` : "Every song has a genre"; })(), () => findGenres()));
   const sizeLine = h("div", { class: "s" }, "…");
   usage().then((u) => { sizeLine.textContent = `${plural(lib.songs.size, "song")} · ${plural(lib.albums.length, "album")}` + (u.usage ? ` · ${fmtSize(u.usage)} used` : ""); });
   libGroup.append(h("div", { class: "item" }, icon("folder"), h("div", { class: "meta" }, h("div", { class: "t" }, "Library"), sizeLine)));
+  libGroup.append(item("info", "Diagnostics", "What the app did recently, for troubleshooting", showDiagnostics));
 
   const eqViz = h("div", { class: "eqviz" });
   const drawEq = () => {
@@ -1364,6 +1455,12 @@ async function importPacks(files) {
   }
   refresh();
   findCovers(false);
+}
+/** "Add Music Pack": on iPhone, Apple's Files browser, and the pack is read from disk piece by piece. */
+async function pickPacks() {
+  if (!nc.on) return $("#pickPack").click();
+  try { const files = await nc.pickPacks(); if (files.length) importPacks(files); }
+  catch (e) { console.warn(e); snack("Couldn't open the pack: " + (e.message || e)); }
 }
 /** "Add Songs": on iPhone, Apple's Files browser (music only); elsewhere the normal file picker. */
 async function pickSongs() {
@@ -2303,6 +2400,10 @@ async function boot() {
   lib.addEventListener("change", () => {});
   await nc.start(TABS, {
     tab: (e) => goTab(e.id),
+    back: () => back(),
+    setting: (e) => applySetting(e.id, e.value),
+    settingTap: (e) => settingAction(e.id),
+    headAction: (e) => { const b = pageEl?.querySelector(".head")?.querySelectorAll(":scope > button:not(.back)")[e.id]; b?.click(); },
     toggle: () => player.toggle(),
     next: () => player.next(),
     prev: () => player.prev(),
@@ -2326,6 +2427,7 @@ async function boot() {
     for (const el of player.els) el.addEventListener("seeked", () => prog(true));
     nc.tint(getComputedStyle(document.documentElement).getPropertyValue("--accent").trim());
     nc.update({ tab: stack[0].type });
+    nc.header(pageEl, pageEl?.classList.contains("scrolled"));
     miniTuck.sync();
   }
   await restoreSession();
@@ -2359,6 +2461,6 @@ async function boot() {
     const audio = files.filter((f) => !/\.zip$/i.test(f.name));
     if (audio.length) importAudio(audio);
   });
-  window.__app = { miniTuck, morph, filt, findGenres, filterSheet, get lyr() { return lyrView; }, np, browse, similarSongs, playWithMix, lyricsPicker, lookupDialog, autoFill, lib, player, push, goTab, openNp, closeNp, toggleLyrics, sharePack, importPacks, importAudio, startSelect, refresh, back, stack: () => stack };
+  window.__app = { DiskFile, miniTuck, morph, filt, findGenres, filterSheet, get lyr() { return lyrView; }, np, browse, similarSongs, playWithMix, lyricsPicker, lookupDialog, autoFill, lib, player, push, goTab, openNp, closeNp, toggleLyrics, sharePack, importPacks, importAudio, startSelect, refresh, back, stack: () => stack };
 }
 boot();

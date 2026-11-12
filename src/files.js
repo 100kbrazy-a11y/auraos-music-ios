@@ -4,6 +4,7 @@
 //  - everywhere else: in IndexedDB, as before.
 import { Capacitor } from "@capacitor/core";
 import { idb } from "./store.js";
+import { diag, timed } from "./diag.js";
 
 export const onDisk = Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios";
 const ROOT = "Songs/";
@@ -22,14 +23,17 @@ export async function putSongFile(blob, file) {
     await idb.put("files", blob instanceof File ? new Blob([blob], { type: blob.type }) : blob, file);
     return "db";
   }
-  const fsx = await fs(), path = ROOT + file;
-  const CH = 3 * 1024 * 1024;                     // written in pieces so a big file never sits in memory twice
-  for (let off = 0; off < blob.size || off === 0; off += CH) {
-    const data = await toBase64(blob.slice(off, off + CH));
-    if (off === 0) await fsx.writeFile({ directory: DIR, path, data, recursive: true });
-    else await fsx.appendFile({ directory: DIR, path, data });
-    if (blob.size === 0) break;
+  const fsx = await timed(fs(), 20000, "Loading the file module"), path = ROOT + file;
+  const name = file.replace(/^.*\//, "");
+  const CH = 1536 * 1024;                         // written in pieces so a big file never sits in memory twice
+  const n = Math.max(1, Math.ceil(blob.size / CH));
+  for (let i = 0, off = 0; i < n; i++, off += CH) {
+    diag.step = `Saving ${name} · ${i + 1}/${n}`;
+    const data = await timed(toBase64(blob.slice(off, off + CH)), 45000, `Reading ${name} (part ${i + 1})`);
+    if (i === 0) await timed(fsx.writeFile({ directory: DIR, path, data, recursive: true }), 45000, `Saving ${name} (part 1)`);
+    else await timed(fsx.appendFile({ directory: DIR, path, data }), 45000, `Saving ${name} (part ${i + 1})`);
   }
+  diag.log(`saved ${file} (${Math.round(blob.size / 1024)} KB, ${n} parts)`);
   return "disk";
 }
 
@@ -65,4 +69,28 @@ export async function delSongFile(s) {
 export async function hasSongFile(s) {
   if (s.store === "disk") { try { const fsx = await fs(); await fsx.stat({ directory: DIR, path: ROOT + s.file }); return true; } catch { return false; } }
   return !!(await idb.get("files", s.file));
+}
+
+/** A file on the phone read in pieces through the app's file server (byte ranges), so a big music pack never has
+ *  to be loaded into memory. Has just what the zip reader needs: size, name, slice(), arrayBuffer(), stream(). */
+export class DiskFile {
+  constructor(url, size, name, start = 0, end = size) { this.url = url; this.total = size; this.name = name; this.start = start; this.end = end; }
+  get size() { return Math.max(0, this.end - this.start); }
+  slice(a = 0, b = this.size) {
+    const n = this.size;
+    const s = a < 0 ? Math.max(0, n + a) : Math.min(n, a), e = b < 0 ? Math.max(0, n + b) : Math.min(n, b);
+    return new DiskFile(this.url, this.total, this.name, this.start + s, this.start + Math.max(s, e));
+  }
+  async arrayBuffer() {
+    if (!this.size) return new ArrayBuffer(0);
+    const r = await timed(fetch(this.url, { headers: { Range: `bytes=${this.start}-${this.end - 1}` } }), 120000, `Reading ${this.name}`);
+    if (!r.ok && r.status !== 0) throw new Error(`Couldn't read ${this.name} (${r.status})`);
+    const buf = await r.arrayBuffer();
+    if (buf.byteLength !== this.size) throw new Error(`Couldn't read ${this.name} (got ${buf.byteLength} of ${this.size} bytes)`);
+    return buf;
+  }
+  /** a real Blob of these bytes */
+  async realize(type = "") { return new Blob([await this.arrayBuffer()], { type }); }
+  async text() { return new TextDecoder().decode(await this.arrayBuffer()); }
+  stream() { const self = this; return new ReadableStream({ async start(c) { c.enqueue(new Uint8Array(await self.arrayBuffer())); c.close(); } }); }
 }
