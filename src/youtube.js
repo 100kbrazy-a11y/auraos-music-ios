@@ -47,10 +47,41 @@ async function client() {
       Platform.load({ ...Platform.shim, eval: (data) => new Function(data.output)() });
       const yt = await timed(Innertube.create({ fetch: nativeFetch, cache: new UniversalCache(false), retrieve_player: true }), 45000, "Connecting to YouTube");
       diag.log("YouTube: connected");
+      yt.session.on("auth", ({ credentials }) => saveCreds(credentials));
+      yt.session.on("update-credentials", ({ credentials }) => saveCreds(credentials));
+      const saved = savedCreds();
+      if (saved) {
+        try { await timed(yt.session.signIn(saved), 30000, "Signing in to YouTube"); yt.session.logged_in = false; diag.log("YouTube: signed in"); }
+        catch (e) { diag.log(`YouTube: saved sign-in didn't work (${e.message || e})`); if (/invalid|revoked|denied|expired/i.test(String(e.message))) saveCreds(null); }
+      }
       return { mod, yt };
     })();
   }
   try { return await ytp; } catch (e) { ytp = null; throw e; }
+}
+
+// ---- signing in (only if YouTube asks): the "enter a code at google.com/device" sign-in that TVs use.
+// The app keeps the sign-in (not your password) on the phone; Sign Out in Settings removes it.
+const AUTH_KEY = "auraos-yt-oauth";
+function savedCreds() { try { return JSON.parse(localStorage.getItem(AUTH_KEY) || "null"); } catch { return null; } }
+function saveCreds(c) { try { c ? localStorage.setItem(AUTH_KEY, JSON.stringify(c)) : localStorage.removeItem(AUTH_KEY); } catch {} }
+export function ytSignedIn() { return !!savedCreds(); }
+/** onCode({ user_code, verification_url }) is called with the code to enter; resolves once you've signed in. */
+export async function ytSignIn(onCode) {
+  const { yt } = await client();
+  if (yt.session.oauth?.oauth2_tokens && ytSignedIn()) return;
+  const pending = (d) => { diag.log("YouTube: sign-in code ready"); onCode?.(d); };
+  yt.session.on("auth-pending", pending);
+  try { await yt.session.signIn(); }
+  finally { yt.session.off("auth-pending", pending); }
+  saveCreds(yt.session.oauth?.oauth2_tokens);
+  yt.session.logged_in = false;                          // (switched on only for the TV identity, see fetchAudio)
+  diag.log("YouTube: signed in");
+}
+export async function ytSignOut() {
+  try { const { yt } = await client(); if (yt.session.oauth?.oauth2_tokens) { yt.session.logged_in = true; await yt.session.signOut(); } } catch (e) { diag.log(`YouTube: sign-out: ${e.message || e}`); }
+  saveCreds(null);
+  ytp = null;                                            // start fresh, signed out
 }
 
 // ---- proof of origin: YouTube now only hands out audio to players that pass its "BotGuard" check. The app's web view
@@ -63,20 +94,43 @@ async function poMinter() {
       const { BotGuardClient } = await import("bgutils-js/botguard");
       const { WebPoMinter } = await import("bgutils-js/webpo");
       const { buildURL, getHeaders } = await import("bgutils-js/utils");
+      const { getChallenge } = await import("bgutils-js/botguard");
       diag.set("YouTube: running YouTube's player check…");
-      const ch = await timed(yt.getAttestationChallenge("ENGAGEMENT_TYPE_UNBOUND"), 30000, "Getting YouTube's check");
-      const bg = ch?.bg_challenge;
-      if (!bg) throw new Error("YouTube didn't send its check");
-      let src = bg.interpreter_url?.private_do_not_access_or_else_trusted_resource_url_wrapped_value || "";
-      if (src.startsWith("//")) src = "https:" + src;
-      const js = await (await nativeFetch(src)).text();
-      if (!js) throw new Error("couldn't load YouTube's check script");
+      // the check (a small program + the script that runs it): from YouTube itself, or else from Google's anti-abuse service
+      let program = "", globalName = "", js = "", src = "";
+      try {
+        const ch = await timed(yt.getAttestationChallenge("ENGAGEMENT_TYPE_UNBOUND"), 30000, "Getting YouTube's check");
+        const bg = ch?.bg_challenge;
+        if (!bg) throw new Error("no check in YouTube's answer");
+        program = bg.program; globalName = bg.global_name;
+        src = bg.interpreter_url?.private_do_not_access_or_else_trusted_resource_url_wrapped_value || "";
+        diag.log(`YouTube: check from YouTube (${globalName}, script ${src ? "url" : "missing"})`);
+      } catch (e) {
+        diag.log(`YouTube: YouTube's check unavailable (${e.message || e}); asking Google's service`);
+        const c = await timed(getChallenge({ requestKey: "O43z0dpjhgX20SCx4KAo", fetchFunction: nativeFetch }), 30000, "Getting Google's check");
+        program = c.program; globalName = c.globalName;
+        js = c.interpreterJavascript?.privateDoNotAccessOrElseSafeScriptWrappedValue || "";
+        src = c.interpreterUrl?.privateDoNotAccessOrElseTrustedResourceUrlWrappedValue || "";
+        diag.log(`YouTube: check from Google (${globalName}, script ${js ? "inline" : src ? "url" : "missing"})`);
+      }
+      if (!js && src) {
+        if (src.startsWith("//")) src = "https:" + src;
+        const r = await nativeFetch(src);
+        js = await r.text();
+        diag.log(`YouTube: check script ${Math.round(js.length / 1024)} KB (HTTP ${r.status})`);
+      }
+      if (!js || !program || !globalName) throw new Error("couldn't load YouTube's check");
       new Function(js)();
-      const bgc = await timed(BotGuardClient.create({ program: bg.program, globalName: bg.global_name, globalObject: globalThis }), 30000, "Starting YouTube's check");
+      if (!globalThis[globalName]) throw new Error("YouTube's check script didn't start");
+      const bgc = await timed(BotGuardClient.create({ program, globalName, globalObject: globalThis }), 30000, "Starting YouTube's check");
       const signal = [];
       const answer = await timed(bgc.snapshot({ webPoSignalOutput: signal }), 30000, "Running YouTube's check");
+      diag.log(`YouTube: check answered (${answer?.length || 0} chars)`);
       const r = await nativeFetch(buildURL("GenerateIT", true), { method: "POST", headers: getHeaders(), body: JSON.stringify(["O43z0dpjhgX20SCx4KAo", answer]) });
-      const arr = await r.json();
+      const txt = await r.text();
+      let arr = null;
+      try { arr = JSON.parse(txt); } catch {}
+      if (!Array.isArray(arr)) diag.log(`YouTube: unexpected check result (HTTP ${r.status}): ${txt.slice(0, 160)}`);
       const [integrityToken, estimatedTtlSecs, mintRefreshThreshold, websafeFallbackToken] = Array.isArray(arr) ? arr : [];
       if (!integrityToken) throw new Error(`YouTube didn't accept the check (${r.status})`);
       const m = await WebPoMinter.create({ integrityToken, estimatedTtlSecs, mintRefreshThreshold, websafeFallbackToken }, signal);
@@ -87,9 +141,10 @@ async function poMinter() {
   }
   try { return await minterP; } catch (e) { minterP = null; throw e; }
 }
+let tokenWhy = "";
 async function tokenFor(id) {
-  try { return await timed((await poMinter()).mintAsWebsafeString(id), 20000, "Making the song's token"); }
-  catch (e) { diag.log(`YouTube: no proof-of-origin token (${e.message || e}); trying without`); return ""; }
+  try { const t = await timed((await poMinter()).mintAsWebsafeString(id), 20000, "Making the song's token"); tokenWhy = ""; return t; }
+  catch (e) { tokenWhy = e.message || String(e); diag.log(`YouTube: no proof-of-origin token (${tokenWhy}); trying without`); return ""; }
 }
 
 /** What a pasted link points at: { video } and/or { list } */
@@ -176,8 +231,12 @@ async function fetchAudio(id, onFrac) {
   const { mod, yt } = await client();
   const reasons = [];
   const pot = await tokenFor(id);
-  for (const name of CLIENTS) {
+  const signedIn = !!yt.session.oauth?.oauth2_tokens && ytSignedIn();
+  // signed in: YouTube's TV identity carries the sign-in, so it goes first
+  const order = signedIn ? ["TV", "TV_SIMPLY", ...CLIENTS.filter((c) => c !== "TV_SIMPLY")] : CLIENTS;
+  for (const name of order) {
     if (!pot && WEBBY.has(name)) continue;                // these need the token
+    yt.session.logged_in = signedIn && name.startsWith("TV");   // (the TV sign-in only works with the TV identities)
     try {
       const info = await timed(yt.getBasicInfo(id, pot ? { client: name, po_token: pot } : { client: name }), 30000, `Asking YouTube (${name})`);
       const ps = info.playability_status;
@@ -191,11 +250,16 @@ async function fetchAudio(id, onFrac) {
       const size = +fmt.content_length || 0;
       diag.log(`YouTube: ${name} gave an address for ${id} (${Math.round(size / 1024)} KB)`);
       const file = await download(url, size, ua, id, onFrac, WEBBY.has(name) ? (name === "YTMUSIC" ? "https://music.youtube.com" : "https://www.youtube.com") : "");
+      yt.session.logged_in = false;
       const b = info.basic_info || {};
       return { ...file, client: name, meta: { title: b.title || "", artist: b.author || "", duration: b.duration || 0, thumb: lastThumb(b.thumbnail) } };
-    } catch (e) { reasons.push(`${name}: ${e.message || e}`); diag.log("YouTube: " + reasons.at(-1)); }
+    } catch (e) { yt.session.logged_in = false; reasons.push(`${name}: ${String(e.message || e).replace(/https:\/\/\S+/, "(address)")}`); diag.log("YouTube: " + reasons.at(-1)); }
   }
-  throw new Error(reasons.at(-1) ? `YouTube refused every way in (${reasons[0]})` : "YouTube refused");
+  yt.session.logged_in = false;
+  const first = String(reasons[0] || "").replace(/(Error downloading file):.*/, "$1");    // (not the whole address)
+  const bot = reasons.some((r) => /not a bot|sign in|LOGIN_REQUIRED/i.test(r));
+  throw new Error(`YouTube refused every way in (${first || "no answer"})` + (pot ? "" : ` · the player check failed: ${tokenWhy}`)
+    + (bot && !signedIn ? " · signing in to YouTube (Settings › YouTube Account) may help" : ""));
 }
 
 /** Download to Library/Incoming natively (straight to a file; never through the web view). */

@@ -980,6 +980,7 @@ function settingsModel(sizeText) {
       { id: "add", type: "action", symbol: "plus", title: "Add Songs", subtitle: "Pick music files from your phone" },
       { id: "pack", type: "action", symbol: "shippingbox", title: "Add Music Pack", subtitle: "Add a …-musicpack.zip someone shared with you" },
       { id: "link", type: "action", symbol: "link", title: "Add from Link (Experimental)", subtitle: "Paste a YouTube or YouTube Music song, album or playlist link" },
+      { id: "ytacct", type: "action", symbol: "person.crop.circle", title: "YouTube Account", subtitle: ytSignedInNow() ? "Signed in · used by Add from Link · tap to sign out" : "Sign in if YouTube asks you to (for Add from Link)" },
       { id: "covers", type: "action", symbol: "globe", title: "Find Missing Covers", subtitle: "Look up album art online" },
       { id: "genres", type: "action", symbol: "magnifyingglass", title: "Find Genres", subtitle: missingGenres ? `Look up genres online for ${plural(missingGenres, "song")} that don't have one` : "Every song has a genre" },
       { id: "autofill", type: "toggle", symbol: "wand.and.stars", title: "Fill In Song Info Automatically", subtitle: "When you add songs, look up missing albums, years, genres and covers", value: s.autofill !== false },
@@ -1022,6 +1023,7 @@ async function settingAction(id) {
   if (id === "add") pickSongs();
   else if (id === "pack") pickPacks();
   else if (id === "link") addFromLink();
+  else if (id === "ytacct") youtubeAccount();
   else if (id === "covers") findCovers(true);
   else if (id === "genres") findGenres();
   else if (id === "diag") showDiagnostics();
@@ -1045,6 +1047,7 @@ function pageSettings() {
     item("add", "Add Songs", "Pick music files from your phone", pickSongs),
     item("pack", "Add Music Pack", "Add a …-musicpack.zip someone shared with you", pickPacks),
     item("globe", "Add from Link (Experimental)", "Paste a YouTube or YouTube Music song, album or playlist link", addFromLink),
+    item("artist", "YouTube Account", ytSignedInNow() ? "Signed in · tap to sign out" : "Sign in if YouTube asks you to (for Add from Link)", () => youtubeAccount()),
     item("globe", "Find Missing Covers", "Look up album art online", () => findCovers(true)),
     item("search", "Find Genres", (() => { const n = [...lib.songs.values()].filter((x) => !genresOf(x).length).length; return n ? `Look up genres online for ${plural(n, "song")} that don't have one` : "Every song has a genre"; })(), () => findGenres()));
   const sizeLine = h("div", { class: "s" }, "…");
@@ -1566,6 +1569,44 @@ async function importAudio(files) {
   if (r.failed) msg += ` · ${r.failed} couldn't be read (${r.firstError})`;
   snack(msg);
   refresh();
+}
+
+// ---- YouTube sign-in for Add from Link (the "enter a code at google.com/device" kind, like a TV)
+const ytSignedInNow = () => { try { return !!localStorage.getItem("auraos-yt-oauth"); } catch { return false; } };
+let ytSigningIn = false;
+async function youtubeAccount() {
+  const yt = await import("./youtube.js");
+  const again = () => { if (nc.on) nc.settings(settingsModel()); else if (stack.at(-1)?.type === "settings") refresh(); };
+  if (yt.ytSignedIn()) {
+    if (await confirmBox("Sign out of YouTube?", "Add from Link will stop using your YouTube account. You can sign in again any time.", "Sign Out")) {
+      await yt.ytSignOut(); snack("Signed out of YouTube"); again();
+    }
+    return;
+  }
+  if (ytSigningIn) return snack("Already waiting for you to sign in…");
+  ytSigningIn = true;
+  const pb = progressBox("Signing in to YouTube");
+  pb.set(0, "Getting a sign-in code…");
+  try {
+    await yt.ytSignIn(async (d) => {
+      const url = d.verification_url || "https://www.google.com/device";
+      try { await navigator.clipboard.writeText(d.user_code); } catch {}
+      pb.set(0.5, `Code ${d.user_code} — enter it at ${url.replace(/^https?:\/\//, "")} (copied)`);
+      diag.step = `Your code: ${d.user_code}`;
+      const go = await confirmBox("Sign in to YouTube", `On the page that opens, sign in with your Google account and enter this code:\n\n${d.user_code}\n\n(It's copied — just paste it.) Then come back here; the app finishes by itself.`, "Open Sign-In Page");
+      if (go) window.open(url, "_blank");
+    });
+    pb.close();
+    snack("Signed in to YouTube — Add from Link will use your account");
+    nc.haptic?.("success");
+  } catch (e) {
+    pb.close();
+    diag.log("YouTube sign-in: " + (e.message || e));
+    snack("Couldn't sign in to YouTube: " + (e.message || e), "Details", showDiagnostics, 10000);
+  } finally {
+    ytSigningIn = false;
+    again();
+  }
 }
 
 // ---- EXPERIMENTAL: add a song / album / playlist from a YouTube or YouTube Music link (see youtube.js)
