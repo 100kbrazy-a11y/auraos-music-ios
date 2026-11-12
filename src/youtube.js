@@ -11,7 +11,9 @@ import { getBlob } from "./http.js";
 
 const native = Capacitor.isNativePlatform();
 // YouTube's app identities to try, in order (the first ones normally need no proof-of-origin token)
-const CLIENTS = ["ANDROID_VR", "VISIONOS", "IOS", "TV_SIMPLY", "WEB_EMBEDDED", "MWEB", "WEB"];
+// With a proof-of-origin token (made below) YouTube Music's own web player identity works best; the others are fallbacks.
+const CLIENTS = ["YTMUSIC", "MWEB", "WEB_EMBEDDED", "IOS", "ANDROID_VR", "VISIONOS", "TV_SIMPLY"];
+const WEBBY = new Set(["YTMUSIC", "MWEB", "WEB_EMBEDDED", "WEB"]);
 
 /** fetch for YouTube.js, through the app's native networking (no browser cross-site blocking) */
 async function nativeFetch(input, init = {}) {
@@ -49,6 +51,45 @@ async function client() {
     })();
   }
   try { return await ytp; } catch (e) { ytp = null; throw e; }
+}
+
+// ---- proof of origin: YouTube now only hands out audio to players that pass its "BotGuard" check. The app's web view
+// is a real browser engine, so it runs YouTube's own check script and gets a token, then makes a token for each song.
+let minterP = null;
+async function poMinter() {
+  if (!minterP) {
+    minterP = (async () => {
+      const { yt } = await client();
+      const { BotGuardClient } = await import("bgutils-js/botguard");
+      const { WebPoMinter } = await import("bgutils-js/webpo");
+      const { buildURL, getHeaders } = await import("bgutils-js/utils");
+      diag.set("YouTube: running YouTube's player check…");
+      const ch = await timed(yt.getAttestationChallenge("ENGAGEMENT_TYPE_UNBOUND"), 30000, "Getting YouTube's check");
+      const bg = ch?.bg_challenge;
+      if (!bg) throw new Error("YouTube didn't send its check");
+      let src = bg.interpreter_url?.private_do_not_access_or_else_trusted_resource_url_wrapped_value || "";
+      if (src.startsWith("//")) src = "https:" + src;
+      const js = await (await nativeFetch(src)).text();
+      if (!js) throw new Error("couldn't load YouTube's check script");
+      new Function(js)();
+      const bgc = await timed(BotGuardClient.create({ program: bg.program, globalName: bg.global_name, globalObject: globalThis }), 30000, "Starting YouTube's check");
+      const signal = [];
+      const answer = await timed(bgc.snapshot({ webPoSignalOutput: signal }), 30000, "Running YouTube's check");
+      const r = await nativeFetch(buildURL("GenerateIT", true), { method: "POST", headers: getHeaders(), body: JSON.stringify(["O43z0dpjhgX20SCx4KAo", answer]) });
+      const arr = await r.json();
+      const [integrityToken, estimatedTtlSecs, mintRefreshThreshold, websafeFallbackToken] = Array.isArray(arr) ? arr : [];
+      if (!integrityToken) throw new Error(`YouTube didn't accept the check (${r.status})`);
+      const m = await WebPoMinter.create({ integrityToken, estimatedTtlSecs, mintRefreshThreshold, websafeFallbackToken }, signal);
+      diag.log("YouTube: player check passed");
+      setTimeout(() => { minterP = null; }, Math.max(300, (estimatedTtlSecs || 3600) - 300) * 1000);   // renew before it runs out
+      return m;
+    })();
+  }
+  try { return await minterP; } catch (e) { minterP = null; throw e; }
+}
+async function tokenFor(id) {
+  try { return await timed((await poMinter()).mintAsWebsafeString(id), 20000, "Making the song's token"); }
+  catch (e) { diag.log(`YouTube: no proof-of-origin token (${e.message || e}); trying without`); return ""; }
 }
 
 /** What a pasted link points at: { video } and/or { list } */
@@ -134,19 +175,22 @@ async function resolve(link) {
 async function fetchAudio(id, onFrac) {
   const { mod, yt } = await client();
   const reasons = [];
+  const pot = await tokenFor(id);
   for (const name of CLIENTS) {
+    if (!pot && WEBBY.has(name)) continue;                // these need the token
     try {
-      const info = await timed(yt.getBasicInfo(id, { client: name }), 30000, `Asking YouTube (${name})`);
+      const info = await timed(yt.getBasicInfo(id, pot ? { client: name, po_token: pot } : { client: name }), 30000, `Asking YouTube (${name})`);
       const ps = info.playability_status;
       if (ps && ps.status && ps.status !== "OK") { reasons.push(`${name}: ${ps.status}${ps.reason ? " – " + ps.reason : ""}`); diag.log("YouTube: " + reasons.at(-1)); continue; }
       let fmt;
       try { fmt = info.chooseFormat({ type: "audio", quality: "best", format: "mp4" }); }
       catch { reasons.push(`${name}: no m4a audio`); diag.log("YouTube: " + reasons.at(-1)); continue; }
-      const url = await timed(fmt.decipher(yt.session.player), 30000, "Unscrambling the audio address");
+      let url = await timed(fmt.decipher(yt.session.player), 30000, "Unscrambling the audio address");
+      if (pot) { const u = new URL(url); u.searchParams.set("pot", pot); url = u.toString(); }
       const ua = mod.Constants?.CLIENTS?.[name]?.USER_AGENT || navigator.userAgent;
       const size = +fmt.content_length || 0;
       diag.log(`YouTube: ${name} gave an address for ${id} (${Math.round(size / 1024)} KB)`);
-      const file = await download(url, size, ua, id, onFrac);
+      const file = await download(url, size, ua, id, onFrac, WEBBY.has(name) ? (name === "YTMUSIC" ? "https://music.youtube.com" : "https://www.youtube.com") : "");
       const b = info.basic_info || {};
       return { ...file, client: name, meta: { title: b.title || "", artist: b.author || "", duration: b.duration || 0, thumb: lastThumb(b.thumbnail) } };
     } catch (e) { reasons.push(`${name}: ${e.message || e}`); diag.log("YouTube: " + reasons.at(-1)); }
@@ -155,14 +199,14 @@ async function fetchAudio(id, onFrac) {
 }
 
 /** Download to Library/Incoming natively (straight to a file; never through the web view). */
-async function download(url, size, ua, id, onFrac) {
+async function download(url, size, ua, id, onFrac, origin = "") {
   const { Filesystem, Directory } = await import("@capacitor/filesystem");
   const rel = `Incoming/yt-${id}-${Date.now().toString(36)}.m4a`;
   let sub = null;
   try { sub = await Filesystem.addListener("progress", (p) => { if (p.contentLength > 0) onFrac?.(p.bytes / p.contentLength); }); } catch {}
   try {
     const full = size ? `${url}&range=0-${size - 1}` : url;
-    const r = await timed(Filesystem.downloadFile({ url: full, path: rel, directory: Directory.Library, headers: { "User-Agent": ua }, recursive: true, progress: true }), 300000, "Downloading");
+    const r = await timed(Filesystem.downloadFile({ url: full, path: rel, directory: Directory.Library, headers: origin ? { "User-Agent": ua, Origin: origin, Referer: origin + "/" } : { "User-Agent": ua }, recursive: true, progress: true }), 300000, "Downloading");
     let got = 0;
     try { got = (await Filesystem.stat({ path: rel, directory: Directory.Library })).size || 0; } catch {}
     diag.log(`YouTube: download finished · ${Math.round(got / 1024)} KB${r?.status ? " · HTTP " + r.status : ""}`);
