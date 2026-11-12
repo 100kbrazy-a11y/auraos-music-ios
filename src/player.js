@@ -182,9 +182,9 @@ class Player extends EventTarget {
     this.loadedAt = performance.now();            // no crossfade may start while a song is being swapped in
     this.ensureGraph();
     this.cancelCrossfade();
-    const blob = await lib.fileBlob(s);
-    if (token !== this._loadToken) return;
-    if (!blob) { this.emit("error"); return; }
+    const src = await lib.fileURL(s).catch(() => null);
+    if (token !== this._loadToken) { if (src?.revoke) URL.revokeObjectURL(src.url); return; }
+    if (!src) { this.emit("error"); return; }
     // short fade so the old song never "chops" into the new one
     if (this.fade && this.playing) {
       const t = this.ctx.currentTime;
@@ -195,8 +195,9 @@ class Player extends EventTarget {
       if (token !== this._loadToken) return;
     }
     const el = this.audio;
-    const old = el.dataset.url;
-    el.dataset.url = this.url = URL.createObjectURL(blob);
+    const old = el.dataset.revoke ? el.dataset.url : null;
+    el.dataset.url = this.url = src.url;
+    el.dataset.revoke = src.revoke ? "1" : "";
     this.els[1 - this.cur].pause();
     if (this.gains) { const t = this.ctx.currentTime; this.gains[this.cur].gain.setValueAtTime(1, t); this.gains[1 - this.cur].gain.setValueAtTime(0, t); }
     el.src = el.dataset.url;
@@ -298,14 +299,15 @@ class Player extends EventTarget {
 
   async startCrossfade(i, secs) {
     const s = lib.songs.get(this.queue[i]);
-    const blob = s && (await lib.fileBlob(s));
-    if (!blob || this.xf) return;
+    const src = s && (await lib.fileURL(s).catch(() => null));
+    if (!src || this.xf) { if (src?.revoke) URL.revokeObjectURL(src.url); return; }
     const from = this.cur, to = 1 - from;
     const next = this.els[to];
     const token = ++this._loadToken;
     this.xf = { from, to, token };
-    const old = next.dataset.url;
-    next.dataset.url = URL.createObjectURL(blob);
+    const old = next.dataset.revoke ? next.dataset.url : null;
+    next.dataset.url = src.url;
+    next.dataset.revoke = src.revoke ? "1" : "";
     next.src = next.dataset.url;
     if (old) setTimeout(() => URL.revokeObjectURL(old), 2000);
     // equal-power curves so the loudness stays even through the blend

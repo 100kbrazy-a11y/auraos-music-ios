@@ -1,6 +1,6 @@
 require_relative '../../node_modules/@capacitor/ios/scripts/pods_helpers'
 
-platform :ios, '13.0'
+platform :ios, '15.0'
 use_frameworks!
 
 # workaround to avoid Xcode caching of Pods that requires
@@ -24,4 +24,8 @@ end
 
 post_install do |installer|
   assertDeploymentTarget(installer)
+  # AuraOS: pods target iOS 15 (the oldest Xcode 26 supports)
+  installer.pods_project.targets.each do |t|
+    t.build_configurations.each { |c| c.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0' }
+  end
 end

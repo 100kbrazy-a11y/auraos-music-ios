@@ -7,6 +7,7 @@ import { LyricsView, fetchLyrics, searchLyrics, cleanTitle } from "./lyrics.js";
 import { persistStorage, usage } from "./store.js";
 import { squareJpeg, coverColor } from "./tags.js";
 import { idb } from "./store.js";
+import { nc, symbolFor } from "./native-chrome.js";
 import { search as searchOnline, details as resultDetails, bestSongMatch, bestAlbumMatch, same } from "./lookup.js";
 
 const native = Capacitor.isNativePlatform();
@@ -134,6 +135,14 @@ function closeSheet(silent) {
   return true;
 }
 function actionSheet(head, actions) {
+  if (nc.on) {                     // iPhone: the system's own (glass) menu
+    const list = actions.filter(Boolean);
+    const txt = (el, sel) => (el && el.querySelector ? el.querySelector(sel)?.textContent : null) || null;
+    const title = txt(head, ".t") || head?.textContent || null, message = txt(head, ".s");
+    nc.actionSheet(title, message, list.map((a, i) => ({ id: String(i), label: String(a.label?.textContent ?? a.label ?? ""), destructive: !!a.danger, symbol: symbolFor(a.icon) || undefined })))
+      .then((id) => { if (id != null) list[+id]?.run(); });
+    return;
+  }
   const box = h("div");
   if (head) box.append(head);
   for (const a of actions) {
@@ -146,6 +155,7 @@ function songHead(s) {
   return h("div", { class: "sh-head" }, art(s.cover, { label: s.album }), h("div", { class: "meta" }, h("div", { class: "t" }, s.title), h("div", { class: "s" }, [s.artist, s.album].filter(Boolean).join(" · "))));
 }
 function prompt(title, message, value = "", suffix = "", ok = "OK") {
+  if (nc.on) return nc.prompt(title, [message, suffix].filter(Boolean).join("\n") || null, value, ok);
   return new Promise((res) => {
     const inp = h("input", { class: "field", value, enterkeyhint: "done" });
     const done = (v) => { closeSheet(true); res(v); };
@@ -157,6 +167,7 @@ function prompt(title, message, value = "", suffix = "", ok = "OK") {
   });
 }
 function confirmBox(title, message, ok = "Remove") {
+  if (nc.on) return nc.confirm(title, message, ok, /remove|delete|clear|erase/i.test(ok));
   return new Promise((res) => {
     const done = (v) => { closeSheet(true); res(v); };
     openSheet(h("div", {}, h("h3", {}, title), h("p", {}, message), h("div", { class: "btns" },
@@ -198,6 +209,7 @@ function markTab() {
   for (const b of $("#tabs").querySelectorAll("button[data-tab]")) b.classList.toggle("on", b.dataset.tab === stack[0].type);
   sideLists();
   moveInd(stack[0].type);
+  nc.update({ tab: stack[0].type });
 }
 
 // ---- sideways: the media bar wraps down to its album cover and tucks in under the tab pill (Settings, and while you scroll)
@@ -231,16 +243,19 @@ const miniTuck = (() => {
     tucked = true;
     document.body.classList.add("mini-tucked");      // wrap down to the cover + tabs shrink…
     place();                                         // …while it slides under them, all at once
+    report();
   }
   function untuck() {
     if (!tucked) return;
     tucked = false;
     document.body.classList.remove("mini-tucked");   // unwrap and slide back together
     $("#mini").style.transform = "";
+    report();
   }
   const later = () => { if (!pinned() && !inSettings) untuck(); };
+  const report = () => nc.update({ tucked, pinned: pinned() });
   function sync() {
-    if (!landscape()) { if (tucked) { tucked = false; document.body.classList.remove("mini-tucked"); $("#mini").style.transform = ""; } return; }
+    if (!landscape()) { if (tucked) { tucked = false; document.body.classList.remove("mini-tucked"); $("#mini").style.transform = ""; report(); } return; }
     if (pinned() || inSettings) { if (tucked) setTimeout(place, 60); else tuck(); }
     else if (tucked) setTimeout(place, 60);
   }
@@ -263,6 +278,7 @@ const miniTuck = (() => {
       lib.meta.settings.tuckPinned = on; lib.saveMeta();
       document.body.classList.toggle("mini-pinned", on);
       clearTimeout(timer);
+      report();
       if (on) tuck(); else if (!inSettings) untuck();
     },
     sync,
@@ -712,7 +728,7 @@ function albumCard(a) {
 function emptyLibrary() {
   return h("div", { class: "empty" }, h("div", { class: "big" }, icon("note")), h("h3", {}, "Add your music"),
     h("div", {}, "Pick songs from your phone, or add a music pack someone shared with you."),
-    h("div", { class: "acts" }, h("button", { class: "btn", onclick: () => $("#pickAudio").click() }, icon("add"), "Add Songs"),
+    h("div", { class: "acts" }, h("button", { class: "btn", onclick: pickSongs }, icon("add"), "Add Songs"),
       h("button", { class: "btn tonal", onclick: () => $("#pickPack").click() }, icon("pack"), "Add a Music Pack")));
 }
 
@@ -911,7 +927,7 @@ function pageSettings() {
     return b;
   };
   const libGroup = h("div", { class: "group" }, h("h4", {}, "Your Music"),
-    item("add", "Add Songs", "Pick music files from your phone", () => $("#pickAudio").click()),
+    item("add", "Add Songs", "Pick music files from your phone", pickSongs),
     item("pack", "Add Music Pack", "Add a …-musicpack.zip someone shared with you", () => $("#pickPack").click()),
     item("globe", "Find Missing Covers", "Look up album art online", () => findCovers(true)),
     item("search", "Find Genres", (() => { const n = [...lib.songs.values()].filter((x) => !genresOf(x).length).length; return n ? `Look up genres online for ${plural(n, "song")} that don't have one` : "Every song has a genre"; })(), () => findGenres()));
@@ -1335,9 +1351,10 @@ async function importPacks(files) {
     try {
       const r = await lib.importPack(f, (x, t) => pb.set(x, t));
       pb.close();
-      if (!r.added && !r.skipped) { snack("There were no songs in that file"); continue; }
+      if (!r.added && !r.skipped) { snack(r.failed ? `Couldn't read the ${plural(r.failed, "song")} in that pack` : "There were no songs in that file"); continue; }
       let msg = `Added “${r.title}”: ${plural(r.added, "song")}`;
       if (r.skipped) msg += ` (${r.skipped} you already had)`;
+      if (r.failed) msg += ` · ${r.failed} couldn't be read`;
       if (r.playlist) msg += ` and the playlist “${r.playlist}”`;
       snack(msg, r.playlist ? "Open" : null, () => push({ type: "playlist", name: r.playlist }), 7000);
     } catch (e) {
@@ -1348,12 +1365,19 @@ async function importPacks(files) {
   refresh();
   findCovers(false);
 }
+/** "Add Songs": on iPhone, Apple's Files browser (music only); elsewhere the normal file picker. */
+async function pickSongs() {
+  if (!nc.on) return $("#pickAudio").click();
+  try { const files = await nc.pickAudio(); if (files.length) importAudio(files); }
+  catch (e) { console.warn(e); $("#pickAudio").click(); }
+}
 async function importAudio(files) {
   if (!files.length) return;
   const pb = progressBox("Adding songs");
   const r = await lib.importFiles(files, (f, t) => pb.set(f, t));
   pb.close();
   setTimeout(() => autoFill(r.songs || []), 4600);
+  if (!r.added && !r.skipped && !r.failed && r.ignored) { snack("Those aren't music files (mp3, m4a, flac, wav, ogg…)"); return; }
   let msg = `Added ${plural(r.added, "song")}`;
   if (r.skipped) msg += ` · ${r.skipped} already in your library`;
   if (r.failed) msg += ` · ${r.failed} couldn't be read`;
@@ -1501,6 +1525,10 @@ function dockFlip(change) {
 function updateMini() {
   const m = $("#mini");
   const s = player.current;
+  if (nc.on) {
+    if (!s) nc.update({ song: false, playing: false });
+    else { nc.update({ song: true, title: s.title, artist: s.artist || s.album || "", playing: player.playing }); nc.art(s.cover || "none", lib.cover(s.cover)?.small); }
+  }
   if (!s) { if (!m.hidden) dockFlip(() => (m.hidden = true)); return; }
   if (m.hidden) { dockFlip(() => (m.hidden = false)); setTimeout(() => miniTuck.sync(), 30); }
   if (m.dataset.id !== s.id) {
@@ -1774,6 +1802,7 @@ function openNp() {
 }
 function prepareNp() {
   npOpen = true;
+  nc.hide();
   progCache.np = progCache.nps = -1;
   npTrack(0);
   updateProgress();
@@ -1879,7 +1908,7 @@ function closeNp(opts = {}) {
   const el = $("#np");
   el.setAttribute("aria-hidden", "true");
   lyrView.stop();
-  if (!motion()) { el.classList.remove("open"); morph.clear(); return true; }
+  if (!motion()) { el.classList.remove("open"); morph.clear(); nc.show(false); return true; }
   // shrink into the bubble from wherever it is (a finger may be partway), overshoot a hair, then the bubble bounces
   if (!morph.active) { morph.rect = anchorRect(); morph.set(0); morph.v = 0; }
   else morph.rect = morph.rect || anchorRect();
@@ -1887,7 +1916,7 @@ function closeNp(opts = {}) {
     if (npOpen) return;
     el.classList.remove("open");
     morph.clear();
-    bounceBubble();
+    if (nc.on) nc.show(true); else bounceBubble();
   };
   morph.animate(1, SPRING_CLOSE, done);
   return true;
@@ -1960,6 +1989,7 @@ function npTrack(dir) {
   const color = cov?.color || "hsl(345 90% 72%)";
   if (document.documentElement.style.getPropertyValue("--accent") !== color) glowFade = performance.now();
   document.documentElement.style.setProperty("--accent", color);
+  nc.tint(color);
   // the blurred backdrops use the small cover (looks the same blurred, far cheaper) and crossfade into each other
   setBackdrop(cov ? cov.small : null, color);
   np.cover.querySelector(".back .blur").style.backgroundImage = cov ? `url(${cov.small})` : "none";
@@ -2205,7 +2235,7 @@ player.addEventListener("track", (e) => {
   if (!miniDir && $("#mini").dataset.id !== player.current?.id) miniDir = e.detail?.dir || 0;
   updateMini();
   npTrack(e.detail?.dir ?? 0);
-  if (!npOpen) document.documentElement.style.setProperty("--accent", lib.colorOf(player.current) || "hsl(345 90% 72%)");
+  if (!npOpen) { const c = lib.colorOf(player.current) || "hsl(345 90% 72%)"; document.documentElement.style.setProperty("--accent", c); nc.tint(c); }
   if (pageEl?.querySelector(".row")) { if (npOpen) pageDirty = true; else requestAnimationFrame(() => setTimeout(refresh, 380)); }
   startViz();
   saveSession();
@@ -2231,9 +2261,10 @@ async function restoreSession() {
   player.shuffle = !!ss.shuffle; player.repeat = ss.repeat || "off"; ctxLabel = ss.ctx || "";
   player.base = [...player.queue];
   if (!player.current) return;
-  const blob = await lib.fileBlob(player.current);
-  if (!blob) return;
-  player.url = player.audio.dataset.url = URL.createObjectURL(blob);
+  const src = await lib.fileURL(player.current).catch(() => null);
+  if (!src) return;
+  player.url = player.audio.dataset.url = src.url;
+  player.audio.dataset.revoke = src.revoke ? "1" : "";
   player.audio.src = player.url;
   player.audio.addEventListener("loadedmetadata", () => { player.audio.currentTime = Math.min(ss.t || 0, player.audio.duration - 1 || 0); }, { once: true });
   updateMini();
@@ -2265,9 +2296,38 @@ async function boot() {
   const sizeDock = () => document.documentElement.style.setProperty("--dock-h", Math.round(dock.getBoundingClientRect().height) + "px");
   new ResizeObserver(sizeDock).observe(dock);
   sizeDock();
+  // iPhone's picker greys out music files when it's limited to "audio/*": let it show everything, the app picks out the songs
+  if (ios) $("#pickAudio").removeAttribute("accept");
   $("#pickAudio").onchange = (e) => { const f = [...e.target.files]; e.target.value = ""; importAudio(f); };
   $("#pickPack").onchange = (e) => { const f = [...e.target.files]; e.target.value = ""; importPacks(f); };
   lib.addEventListener("change", () => {});
+  await nc.start(TABS, {
+    tab: (e) => goTab(e.id),
+    toggle: () => player.toggle(),
+    next: () => player.next(),
+    prev: () => player.prev(),
+    open: () => { if (player.current && !npOpen) openNp(); },
+    // drag up on the native bubble: the player grows out of it under the finger
+    dragStart: () => { if (!player.current || npOpen) return; prepareNp(); morph.rect = anchorRect(); morph.set(1); morph.grab(); morph.start = 1; },
+    drag: (e) => { if (npOpen && morph.active) morph.drag(e.dy); },
+    dragEnd: (e) => {
+      if (!npOpen || !morph.active) return;
+      const v = e.v || 0;
+      morph.v = (v * 1000) / morph.dist();
+      if (morph.p < 0.72 || v < -0.5) morph.animate(0, SPRING_OPEN, () => morph.clear());
+      else closeNp({ fromDrag: true });
+    },
+  });
+  if (nc.on) {
+    let at = 0;
+    const prog = (force) => { const now = performance.now(); if (!force && now - at < 900) return; at = now; const a = player.audio; nc.progress(a.currentTime, a.duration || player.current?.duration, player.playing); };
+    player.addEventListener("time", () => prog());
+    for (const ev of ["state", "track"]) player.addEventListener(ev, () => prog(true));
+    for (const el of player.els) el.addEventListener("seeked", () => prog(true));
+    nc.tint(getComputedStyle(document.documentElement).getPropertyValue("--accent").trim());
+    nc.update({ tab: stack[0].type });
+    miniTuck.sync();
+  }
   await restoreSession();
   if (ios) {
     // the keyboard covers the bottom of the screen on iPhone; lift sheets above it

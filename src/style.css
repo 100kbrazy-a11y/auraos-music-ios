@@ -773,3 +773,9 @@ html.ios .page { -webkit-overflow-scrolling: touch; }
   background: var(--lg-rim);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor;
   mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0); }
+
+/* iPhone with the native Liquid Glass bubble: the web bubble stays in place (it decides sizes and positions) but isn't drawn;
+   its visualizer still is, so the real glass on top bends it */
+html.native-chrome #dock, html.native-chrome #mini, html.native-chrome #tabs { visibility: hidden; }
+html.native-chrome #dock .tviz, html.native-chrome #mini canvas { visibility: visible; }
+html.native-chrome #dock::before, html.native-chrome #dock::after, html.native-chrome #tabs::after { display: none; }

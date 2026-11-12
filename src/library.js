@@ -1,6 +1,7 @@
 import { idb } from "./store.js";
 import { readTags, squareJpeg, coverColor, organizedPath, extOf, isAudio, safeName, primaryArtist, probeDuration } from "./tags.js";
 import { buildZip, readZip } from "./zip.js";
+import { putSongFile, songBlob, delSongFile, songURL } from "./files.js";
 
 export const PACK_FORMAT = "auraos-musicpack";
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -128,9 +129,10 @@ class Library extends EventTarget {
     if (dup) return { song: dup, skipped: true };
     const ext = extOf(name) || "mp3";
     const file = this.uniqueFile(organizedPath(tags, ext));
-    const song = { id: uid(), file, ...tags, size: blob.size, added: Date.now(), type: blob.type || "" };
+    const type = blob.type || mimeFor(ext);
+    const song = { id: uid(), file, ...tags, size: blob.size, added: Date.now(), type };
     song.cover = await this.storeCover(tags, picture || folderCover);
-    await idb.put("files", blob instanceof File ? new Blob([blob], { type: blob.type }) : blob, file);
+    song.store = await putSongFile(blob.type ? blob : new Blob([blob], { type }), file);
     await idb.put("songs", song);
     this.songs.set(song.id, song);
     return { song, skipped: false };
@@ -167,20 +169,25 @@ class Library extends EventTarget {
     const covers = new Map();
     for (const e of entries) if (/(^|\/)(cover|folder|front)\.(jpe?g|png)$/i.test(e.name)) covers.set(e.name.replace(/[^/]*$/, ""), e);
     const audio = entries.filter((e) => isAudio(e.name) && !e.name.includes("__MACOSX"));
-    let added = 0, skipped = 0;
+    let added = 0, skipped = 0, failed = 0;
     const order = [];
     for (let i = 0; i < audio.length; i++) {
       const e = audio[i];
       onProgress?.(i / audio.length, e.name.replace(/^.*\//, ""));
-      const rel = e.name.replace(/^Music\//, "");
-      const fields = { ...(info.get(rel) || {}) };
-      delete fields.file; delete fields.duration;
-      const dir = e.name.replace(/[^/]*$/, "");
-      const cov = covers.get(dir) ? await covers.get(dir).blob() : null;
-      const blob = new Blob([await e.blob()], { type: mimeFor(extOf(e.name)) });
-      const r = await this.addAudio(blob, e.name.replace(/^.*\//, ""), fields, cov);
-      r.skipped ? skipped++ : added++;
-      order.push(r.song.id);
+      try {                                // one unreadable song doesn't stop the rest of the pack
+        const rel = e.name.replace(/^Music\//, "");
+        const fields = { ...(info.get(rel) || {}) };
+        delete fields.file; delete fields.duration;
+        const dir = e.name.replace(/[^/]*$/, "");
+        const cov = covers.get(dir) ? await covers.get(dir).blob() : null;
+        const blob = new Blob([await e.blob()], { type: mimeFor(extOf(e.name)) });
+        const r = await this.addAudio(blob, e.name.replace(/^.*\//, ""), fields, cov);
+        r.skipped ? skipped++ : added++;
+        order.push(r.song.id);
+      } catch (err) {
+        console.warn("pack: couldn't add", e.name, err);
+        failed++;
+      }
     }
     this.rebuild();
     let playlist = null;
@@ -193,7 +200,7 @@ class Library extends EventTarget {
       }
     }
     const title = manifest.title || (file.name || "Music pack").replace(/-musicpack.*$/i, "").replace(/\.zip$/i, "");
-    return { added, skipped, playlist, title };
+    return { added, skipped, failed, playlist, title };
   }
 
   async buildPack(title, songs, playlist, onProgress) {
@@ -201,7 +208,7 @@ class Library extends EventTarget {
     const manifest = { format: PACK_FORMAT, version: 1, title, created: new Date().toISOString().slice(0, 19),
       made_with: "AuraOS Music for Android", playlist: playlist || null, songs: [] };
     for (const s of songs) {
-      const blob = await idb.get("files", s.file);
+      const blob = await songBlob(s);
       if (!blob) continue;
       let rel = organizedPath(s, extOf(s.file) || "mp3");
       const base = rel.replace(/\.[^.]+$/, ""), ext = extOf(rel);
@@ -234,7 +241,7 @@ class Library extends EventTarget {
     for (const id of ids) {
       const s = this.songs.get(id);
       if (!s) continue;
-      await idb.del("files", s.file);
+      await delSongFile(s);
       await idb.del("songs", id);
       this.songs.delete(id);
       delete this.meta.favorites[id];
@@ -275,7 +282,9 @@ class Library extends EventTarget {
     return n;
   }
 
-  async fileBlob(s) { return idb.get("files", s.file); }
+  async fileBlob(s) { return songBlob(s); }
+  /** { url, revoke } for playing a song, or null if its file is missing */
+  async fileURL(s) { return songURL(s); }
 }
 
 export function mimeFor(ext) {

@@ -53,4 +53,34 @@ if (!sw.includes("AuraOS audio session")) {
   );
   fs.writeFileSync(delegatePath, sw);
 }
+// ---------------------------------------------------------------- native Liquid Glass chrome (ios-native/NativeChrome.swift)
+// Kept in AppDelegate.swift so no new files have to be registered in the Xcode project.
+const native = fs.readFileSync(path.join(root, "ios-native/NativeChrome.swift"), "utf8").trim();
+sw = fs.readFileSync(delegatePath, "utf8");
+const B = "// ===== AuraOS native chrome (begin) =====", E = "// ===== AuraOS native chrome (end) =====";
+const body = native.split("\n").filter((l) => !/^import (UIKit|Capacitor|WebKit)$/.test(l)).join("\n");
+if (!sw.includes("import WebKit")) sw = sw.replace("import Capacitor\n", "import Capacitor\nimport WebKit\n");
+const i = sw.indexOf(B), j = sw.indexOf(E);
+sw = i >= 0 && j > i ? sw.slice(0, i) + body + sw.slice(j + E.length) : sw.trimEnd() + "\n\n" + body + "\n";
+fs.writeFileSync(delegatePath, sw);
+
+// the app's screen uses our view controller (it registers the native chrome plugin)
+const sbPath = path.join(app, "Base.lproj/Main.storyboard");
+let sb = fs.readFileSync(sbPath, "utf8");
+sb = sb.replace(/customClass="CAPBridgeViewController" customModule="Capacitor"/, 'customClass="MainViewController" customModule="App" customModuleProvider="target"');
+fs.writeFileSync(sbPath, sb);
+
+// Xcode 26 builds for iOS 15 and newer
+const pbxPath = path.join(root, "ios/App/App.xcodeproj/project.pbxproj");
+fs.writeFileSync(pbxPath, fs.readFileSync(pbxPath, "utf8").replace(/IPHONEOS_DEPLOYMENT_TARGET = 1[0-4]\.0;/g, "IPHONEOS_DEPLOYMENT_TARGET = 15.0;"));
+const podPath = path.join(root, "ios/App/Podfile");
+let pod = fs.readFileSync(podPath, "utf8").replace(/platform :ios, '1[0-4]\.0'/, "platform :ios, '15.0'");
+if (!pod.includes("AuraOS: pods target iOS 15")) {
+  pod = pod.replace("assertDeploymentTarget(installer)", `assertDeploymentTarget(installer)
+  # AuraOS: pods target iOS 15 (the oldest Xcode 26 supports)
+  installer.pods_project.targets.each do |t|
+    t.build_configurations.each { |c| c.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0' }
+  end`);
+}
+fs.writeFileSync(podPath, pod);
 console.log("iOS project patched");

@@ -28,9 +28,23 @@ sidestore://install?url=https://github.com/<your-github-name>/auraos-music-ios/r
 
 Run it again after a new build to update. Your library and settings stay.
 
+## Real Liquid Glass (iOS 26)
+
+The floating parts are native iPhone views using Apple's own Liquid Glass (`ios-native/NativeChrome.swift`):
+
+- the media bar + tabs bubble (upright), and the tab pill + media bubble (sideways), with the same gestures:
+  tap to open, swipe sideways to skip, drag up to grow the player, touch-and-slide the tab highlight, tucking
+- play / pause is a system glass button; the glass picks up the song's colour
+- song menus, confirmations and rename boxes are the system's glass menus and alerts
+- Add Songs opens Apple's Files browser, showing music files only
+
+The web screens underneath still decide sizes and positions, and the visualizer still draws under the glass.
+On iOS versions before 26 the same views use the standard frosted blur.
+
 ## What's different from Android
 
 - Background playback, lock-screen and Control Center controls; plays with the silent switch on.
+- Songs are stored as real files inside the app (not in the web view's database), so big libraries and packs work.
 - Music packs you export are saved in Files › On My iPhone › AuraOS Music.
 - No hardware back button: use the back arrow, or swipe right on a page.
 - Music servers on your home network (Navidrome / Subsonic over http) are allowed.
