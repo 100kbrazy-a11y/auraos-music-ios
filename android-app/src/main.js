@@ -7,6 +7,7 @@ import { LyricsView, fetchLyrics, searchLyrics, cleanTitle } from "./lyrics.js";
 import { persistStorage, usage } from "./store.js";
 import { squareJpeg, coverColor } from "./tags.js";
 import { idb } from "./store.js";
+import { diag } from "./diag.js";
 import { search as searchOnline, details as resultDetails, bestSongMatch, bestAlbumMatch, same } from "./lookup.js";
 
 const native = Capacitor.isNativePlatform();
@@ -911,6 +912,9 @@ function pageSettings() {
   const libGroup = h("div", { class: "group" }, h("h4", {}, "Your Music"),
     item("add", "Add Songs", "Pick music files from your phone", () => $("#pickAudio").click()),
     item("pack", "Add Music Pack", "Add a …-musicpack.zip someone shared with you", () => $("#pickPack").click()),
+    item("globe", "Add from Link (Experimental)", "Paste a YouTube or YouTube Music song, album or playlist link", () => addFromLink()),
+    item("artist", "YouTube Account", ytSignedInNow() ? "Signed in · used by Add from Link · tap to sign out" : "Sign in if YouTube asks you to (for Add from Link)", () => youtubeAccount()),
+    item("search", "Diagnostics", "What the app has been doing — copy it to send when something goes wrong", () => showDiagnostics()),
     item("globe", "Find Missing Covers", "Look up album art online", () => findCovers(true)),
     item("search", "Find Genres", (() => { const n = [...lib.songs.values()].filter((x) => !genresOf(x).length).length; return n ? `Look up genres online for ${plural(n, "song")} that don't have one` : "Every song has a genre"; })(), () => findGenres()));
   const sizeLine = h("div", { class: "s" }, "…");
@@ -1356,6 +1360,84 @@ async function importAudio(files) {
   snack(msg);
   refresh();
 }
+
+// ============================================================ YouTube: Add from Link (experimental) + sign-in
+const ytSignedInNow = () => { try { return !!localStorage.getItem("auraos-yt-oauth"); } catch { return false; } };
+let linkBusy = false, ytSigningIn = false;
+
+async function addFromLink() {
+  if (linkBusy) return snack("Already adding from a link…");
+  const text = await prompt("Add from Link", "Paste a YouTube or YouTube Music link to a song, album or playlist. Experimental: YouTube sometimes blocks this.", "", "", "Add");
+  if (!text) return;
+  const yt = await import("./youtube.js");
+  if (!yt.parseLink(text)) { snack("That isn't a YouTube or YouTube Music link"); return; }
+  linkBusy = true;
+  const pb = progressBox("Adding from YouTube");
+  try {
+    const r = await yt.importLink(text, lib, (f, t) => pb.set(f, t));
+    pb.close();
+    setTimeout(() => autoFill(r.songs || []), 4600);
+    if (!r.added && !r.skipped) { snack(`Couldn't add from that link${r.firstError ? ": " + r.firstError : ""}`, "Details", showDiagnostics, 12000); return; }
+    let msg = `Added ${plural(r.added, "song")}`;
+    if (r.skipped) msg += ` · ${r.skipped} already in your library`;
+    if (r.failed) msg += ` · ${r.failed} couldn't be downloaded`;
+    if (r.playlist) msg += ` and the playlist “${r.playlist}”`;
+    snack(msg, r.playlist ? "Open" : null, () => push({ type: "playlist", name: r.playlist }), 8000);
+  } catch (e) {
+    pb.close();
+    diag.log("YouTube: " + (e.message || e));
+    snack("Couldn't add from that link: " + (e.message || e), "Details", showDiagnostics, 12000);
+  } finally {
+    linkBusy = false;
+    refresh();
+  }
+}
+
+async function youtubeAccount() {
+  const yt = await import("./youtube.js");
+  const again = () => { if (stack.at(-1)?.type === "settings") refresh(); };
+  if (yt.ytSignedIn()) {
+    if (await confirmBox("Sign out of YouTube?", "Add from Link will stop using your YouTube account. You can sign in again any time.", "Sign Out")) {
+      await yt.ytSignOut(); snack("Signed out of YouTube"); again();
+    }
+    return;
+  }
+  if (ytSigningIn) return snack("Already waiting for you to sign in…");
+  ytSigningIn = true;
+  try {
+    let pb = null;
+    await yt.ytSignIn(async (d) => {
+      const url = d.verification_url || "https://www.google.com/device";
+      try { await navigator.clipboard.writeText(d.user_code); } catch {}
+      const go = await confirmBox("Sign in to YouTube", `On the page that opens, sign in with your Google account and enter this code: ${d.user_code} (it's copied — just paste it). Then come back here; the app finishes by itself.`, "Open Sign-In Page");
+      if (go) window.open(url, "_blank");
+      pb = progressBox("Signing in to YouTube");
+      pb.set(0.5, `Waiting for you to enter ${d.user_code} at ${url.replace(/^https?:\/\//, "")}…`);
+    });
+    pb?.close();
+    snack("Signed in to YouTube — Add from Link will use your account");
+  } catch (e) {
+    closeSheet(true);
+    diag.log("YouTube sign-in: " + (e.message || e));
+    snack("Couldn't sign in to YouTube: " + (e.message || e), "Details", showDiagnostics, 10000);
+  } finally {
+    ytSigningIn = false;
+    again();
+  }
+}
+
+function showDiagnostics() {
+  const text = "AuraOS diagnostics (newest first)\n" + diag.text().split("\n").reverse().join("\n");
+  const pre = h("pre", { style: { whiteSpace: "pre-wrap", fontSize: "11px", maxHeight: "50vh", overflow: "auto", userSelect: "text" } }, text);
+  openSheet(h("div", {}, h("h3", {}, "Diagnostics"), pre, h("div", { class: "btns" },
+    h("button", { class: "btn text", onclick: () => { diag.clear(); closeSheet(); snack("Cleared"); } }, "Clear"),
+    h("button", { class: "btn text", onclick: async () => {
+      try { const { Share } = await import("@capacitor/share"); await Share.share({ title: "AuraOS diagnostics", text }); } catch {}
+    } }, "Share"),
+    h("button", { class: "btn", onclick: async () => { try { await navigator.clipboard.writeText(text); snack("Copied"); } catch { snack("Couldn't copy — use Share"); } } }, "Copy"))), { dialog: true });
+}
+window.addEventListener("error", (e) => diag.log("ERROR " + (e.message || e.error)));
+window.addEventListener("unhandledrejection", (e) => diag.log("UNHANDLED " + (e.reason?.message || e.reason)));
 
 // ============================================================ browse: search your library, with recent searches
 const browse = { q: "" };

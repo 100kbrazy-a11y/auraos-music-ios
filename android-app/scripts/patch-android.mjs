@@ -64,6 +64,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        registerPlugin(AuraPoPlugin.class);             // YouTube proof-of-origin tokens (Add from Link)
         super.onCreate(savedInstanceState);
         Window w = getWindow();
         WindowCompat.setDecorFitsSystemWindows(w, false);

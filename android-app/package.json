@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build -c vite.po.config.js && vite build",
     "preview": "vite preview"
   },
   "devDependencies": {
@@ -19,7 +19,9 @@
     "@capacitor/share": "^6.0.4",
     "@capacitor/status-bar": "^6.0.3",
     "@jofr/capacitor-media-session": "^4.0.0",
-    "music-metadata": "^12.3.5"
+    "bgutils-js": "^4.0.3",
+    "music-metadata": "^12.3.5",
+    "youtubei.js": "^18.3.0"
   },
   "private": true,
   "type": "module",
