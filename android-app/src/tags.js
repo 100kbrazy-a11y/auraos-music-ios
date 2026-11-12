@@ -1,0 +1,145 @@
+import { parseBlob } from "music-metadata";
+
+export const AUDIO_EXT = ["mp3", "flac", "m4a", "aac", "ogg", "opus", "wav", "aif", "aiff", "wma", "alac", "mp4", "weba", "webm"];
+
+export function extOf(name) {
+  const m = /\.([a-z0-9]+)$/i.exec(name || "");
+  return m ? m[1].toLowerCase() : "";
+}
+
+export function isAudio(name, type) {
+  return AUDIO_EXT.includes(extOf(name)) || (type || "").startsWith("audio/");
+}
+
+export function safeName(s, fallback = "Unknown") {
+  s = String(s || "").replace(/[\x00-\x1f/\\:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim().replace(/^\.+|\.+$/g, "").trim();
+  return (s || fallback).slice(0, 120);
+}
+
+/** Same layout as the desktop app: Artist/Album/NN Title.ext */
+export function organizedPath(t, ext) {
+  const artist = t.albumartist || primaryArtist(t.artist) || "Unknown Artist";
+  const album = t.album || "Unknown Album";
+  const n = +t.track || 0, d = +t.disc || 0;
+  const pre = n ? (d > 1 ? `${d}-${String(n).padStart(2, "0")} ` : `${String(n).padStart(2, "0")} `) : "";
+  return `${safeName(artist, "Unknown Artist")}/${safeName(album, "Unknown Album")}/${pre}${safeName(t.title, "Untitled")}.${ext}`;
+}
+
+function fromFilename(name) {
+  let stem = name.replace(/^.*[\\/]/, "").replace(/\.[^.]+$/, "");
+  const out = {};
+  let m = /^(\d{1,3})[\s._-]+(.*)$/.exec(stem);
+  if (m) { out.track = +m[1]; stem = m[2]; }
+  m = /^(.+?)\s+-\s+(.+)$/.exec(stem);
+  if (m) { out.artist = m[1].trim(); stem = m[2]; }
+  out.title = stem.replace(/_/g, " ").trim() || "Untitled";
+  return out;
+}
+
+export const primaryArtist = (a) => String(a || "").split(/\s*,\s*/)[0].trim();
+
+/** Ask the browser's own decoder for the length when the tags don't say. */
+export function probeDuration(blob) {
+  return new Promise((res) => {
+    const a = new Audio();
+    const url = URL.createObjectURL(blob);
+    const done = (d) => { URL.revokeObjectURL(url); a.src = ""; res(isFinite(d) ? d : 0); };
+    a.preload = "metadata";
+    a.onloadedmetadata = () => done(a.duration);
+    a.onerror = () => done(0);
+    setTimeout(() => done(0), 4000);
+    a.src = url;
+  });
+}
+
+export function joinNames(list) {
+  const seen = new Set(), out = [];
+  for (const x of list || []) for (const p of String(x).split(/\s*[;/]\s*|\s*,\s*/)) {
+    const k = p.trim();
+    if (k && !seen.has(k.toLowerCase())) { seen.add(k.toLowerCase()); out.push(k); }
+  }
+  return out.join(", ");
+}
+
+/** Read song info + embedded cover from an audio Blob/File. */
+export async function readTags(blob, name) {
+  let m = null;
+  try { m = await parseBlob(blob, { duration: true }); } catch {}
+  const c = m?.common || {};
+  const guess = fromFilename(name || blob.name || "");
+  const t = {
+    title: (c.title || "").trim() || guess.title,
+    artist: joinNames(c.artists?.length ? c.artists : c.artist ? [c.artist] : []) || guess.artist || "",
+    album: (c.album || "").trim(),
+    albumartist: (c.albumartist || "").trim(),
+    track: c.track?.no || guess.track || 0,
+    disc: c.disk?.no || 0,
+    year: c.year ? String(c.year) : (c.date || "").slice(0, 4),
+    genre: joinNames(c.genre || []),
+    composer: joinNames(c.composer || []),
+    label: (c.label || [])[0] || "",
+    copyright: c.copyright || "",
+    isrc: (c.isrc || [])[0] || "",
+    bpm: c.bpm || "",
+    duration: m?.format?.duration || 0,
+    codec: [m?.format?.codec || m?.format?.container, m?.format?.sampleRate ? `${m.format.sampleRate / 1000} kHz` : "",
+      m?.format?.bitsPerSample ? `${m.format.bitsPerSample}-bit` : "",
+      m?.format?.bitrate ? `${Math.round(m.format.bitrate / 1000)} kbps` : ""].filter(Boolean).join(" · "),
+  };
+  const pic = c.picture?.find((p) => /front/i.test(p.type || "")) || c.picture?.[0];
+  return { tags: t, picture: pic ? new Blob([pic.data], { type: pic.format || "image/jpeg" }) : null };
+}
+
+/** Decode an image and make a square JPEG of `size` px. */
+export async function squareJpeg(blob, size) {
+  try {
+    const bmp = await createImageBitmap(blob);
+    const s = Math.min(bmp.width, bmp.height);
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = size;
+    const g = cv.getContext("2d");
+    g.imageSmoothingQuality = "high";
+    g.drawImage(bmp, (bmp.width - s) / 2, (bmp.height - s) / 2, s, s, 0, 0, size, size);
+    bmp.close?.();
+    return await new Promise((r) => cv.toBlob(r, "image/jpeg", 0.9));
+  } catch {
+    return null;
+  }
+}
+
+/** A pleasant accent colour from a cover. */
+export async function coverColor(blob) {
+  try {
+    const bmp = await createImageBitmap(blob, { resizeWidth: 24, resizeHeight: 24 });
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = 24;
+    const g = cv.getContext("2d");
+    g.drawImage(bmp, 0, 0);
+    const d = g.getImageData(0, 0, 24, 24).data;
+    let r = 0, gg = 0, b = 0, w = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      const mx = Math.max(d[i], d[i + 1], d[i + 2]), mn = Math.min(d[i], d[i + 1], d[i + 2]);
+      const sat = mx ? (mx - mn) / mx : 0;
+      const wt = 0.05 + sat * sat * (mx / 255);
+      r += d[i] * wt; gg += d[i + 1] * wt; b += d[i + 2] * wt; w += wt;
+    }
+    return hslFix([r / w, gg / w, b / w]);
+  } catch {
+    return null;
+  }
+}
+
+function hslFix([r, g, b]) {
+  r /= 255; g /= 255; b /= 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+  let h = 0, s = 0;
+  const l = (mx + mn) / 2;
+  if (mx !== mn) {
+    const d = mx - mn;
+    s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+    h = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    h /= 6;
+  }
+  const L = Math.min(0.72, Math.max(0.58, l)), S = Math.min(0.85, Math.max(0.35, s));
+  return `hsl(${Math.round(h * 360)} ${Math.round(S * 100)}% ${Math.round(L * 100)}%)`;
+}
