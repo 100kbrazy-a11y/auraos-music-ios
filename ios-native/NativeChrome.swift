@@ -331,9 +331,7 @@ final class ProgressPanel {
         dim.backgroundColor = UIColor.black.withAlphaComponent(0.28)
         dim.alpha = 0
         host.addSubview(dim)
-        card.clipsToBounds = true
-        card.layer.cornerRadius = 30
-        card.layer.cornerCurve = .continuous
+        shapeGlass(card, 30)
         dim.addSubview(card)
         titleLabel.text = title
         titleLabel.font = .systemFont(ofSize: 20, weight: .bold)
@@ -687,6 +685,25 @@ enum Haptics {
     }
 }
 
+/// Give a glass view its rounded shape the way iOS 26 wants it. Real Liquid Glass ignores layer.cornerRadius and must
+/// NOT be clipped (clipping cuts off its rim, highlights and the bending at the edges — it then looks like a fake);
+/// it takes the shape from cornerConfiguration instead. What's *inside* the glass is still clipped to the same shape.
+func shapeGlass(_ v: UIVisualEffectView, _ r: CGFloat) {
+    let r = max(0, r)
+    v.layer.cornerCurve = .continuous
+    v.contentView.layer.cornerRadius = r
+    v.contentView.layer.cornerCurve = .continuous
+    v.contentView.clipsToBounds = true
+    if #available(iOS 26.0, *) {
+        v.clipsToBounds = false
+        v.layer.cornerRadius = r
+        v.cornerConfiguration = .corners(radius: .fixed(Double(r)))
+    } else {
+        v.clipsToBounds = true
+        v.layer.cornerRadius = r
+    }
+}
+
 /// A round button of clear Liquid Glass with a symbol on it (it bends what's behind it, and reacts to touch).
 final class GlassCircle: UIView {
     let glass = UIVisualEffectView(effect: nil)
@@ -702,7 +719,6 @@ final class GlassCircle: UIView {
         } else {
             glass.effect = UIBlurEffect(style: .systemUltraThinMaterialDark)
         }
-        glass.clipsToBounds = true
         addSubview(glass)
         icon.tintColor = .white
         icon.contentMode = .center
@@ -717,7 +733,7 @@ final class GlassCircle: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         glass.frame = bounds
-        glass.layer.cornerRadius = bounds.width / 2
+        shapeGlass(glass, bounds.width / 2)
         icon.frame = glass.bounds
     }
     func setSymbol(_ name: String) {
@@ -774,16 +790,19 @@ extension NativeChromePlugin {
     }
 }
 
-/// A lens of clear glass: no blur — it shows a magnified copy of what's under it (so the icons and titles bend
-/// as it passes over them), with a bright rim, a highlight across the top and a soft inner glow.
+/// The lens over the tabs / top-bar buttons while your finger is on them. On iOS 26 it's the system's own clear
+/// Liquid Glass (its real rim, light and edge bending) with a magnified copy of the icons inside it, like the system
+/// tab bar; on older systems a drawn imitation.
 final class GlassLens: UIView {
+    let glass = UIVisualEffectView(effect: nil)       // iOS 26: the real glass
     let mirrorHost = UIView()
-    let overlay = UIView()
+    let overlay = UIView()                            // older iOS: the drawn rim / shine
     let shine = CAGradientLayer()
     let glow = CAGradientLayer()
     var mirror: UIView?
     weak var source: UIView?
     var magnification: CGFloat = 1.3
+    var realGlass: Bool { if #available(iOS 26.0, *) { return true } else { return false } }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -791,32 +810,56 @@ final class GlassLens: UIView {
         alpha = 0
         mirrorHost.clipsToBounds = true
         mirrorHost.layer.cornerCurve = .continuous
-        addSubview(mirrorHost)
-        overlay.isUserInteractionEnabled = false
-        overlay.layer.cornerCurve = .continuous
-        overlay.layer.borderWidth = 1
-        overlay.layer.borderColor = UIColor.white.withAlphaComponent(0.6).cgColor
-        overlay.backgroundColor = UIColor.white.withAlphaComponent(0.03)
-        glow.type = .radial
-        glow.colors = [UIColor.white.withAlphaComponent(0.0).cgColor, UIColor.white.withAlphaComponent(0.18).cgColor]
-        glow.startPoint = CGPoint(x: 0.5, y: 0.5)
-        glow.endPoint = CGPoint(x: 1.05, y: 1.05)
-        shine.colors = [UIColor.white.withAlphaComponent(0.42).cgColor, UIColor.white.withAlphaComponent(0.0).cgColor]
-        shine.startPoint = CGPoint(x: 0.5, y: 0)
-        shine.endPoint = CGPoint(x: 0.5, y: 0.5)
-        overlay.layer.addSublayer(glow)
-        overlay.layer.addSublayer(shine)
-        addSubview(overlay)
-        layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = 0.2
-        layer.shadowRadius = 10
-        layer.shadowOffset = CGSize(width: 0, height: 4)
+        if realGlass {
+            addSubview(glass)
+            glass.contentView.addSubview(mirrorHost)
+        } else {
+            addSubview(mirrorHost)
+            overlay.isUserInteractionEnabled = false
+            overlay.layer.cornerCurve = .continuous
+            overlay.layer.borderWidth = 1
+            overlay.layer.borderColor = UIColor.white.withAlphaComponent(0.6).cgColor
+            overlay.backgroundColor = UIColor.white.withAlphaComponent(0.03)
+            glow.type = .radial
+            glow.colors = [UIColor.white.withAlphaComponent(0.0).cgColor, UIColor.white.withAlphaComponent(0.18).cgColor]
+            glow.startPoint = CGPoint(x: 0.5, y: 0.5)
+            glow.endPoint = CGPoint(x: 1.05, y: 1.05)
+            shine.colors = [UIColor.white.withAlphaComponent(0.42).cgColor, UIColor.white.withAlphaComponent(0.0).cgColor]
+            shine.startPoint = CGPoint(x: 0.5, y: 0)
+            shine.endPoint = CGPoint(x: 0.5, y: 0.5)
+            overlay.layer.addSublayer(glow)
+            overlay.layer.addSublayer(shine)
+            addSubview(overlay)
+            layer.shadowColor = UIColor.black.cgColor
+            layer.shadowOpacity = 0.2
+            layer.shadowRadius = 10
+            layer.shadowOffset = CGSize(width: 0, height: 4)
+        }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// the glass materialises as the lens appears and dissolves as it goes (the system's own way of showing glass)
+    override var alpha: CGFloat {
+        didSet {
+            guard #available(iOS 26.0, *) else { return }
+            let on = alpha > 0.01
+            if on && glass.effect == nil {
+                let g = UIGlassEffect(style: .clear)
+                g.isInteractive = true
+                glass.effect = g
+            } else if !on && glass.effect != nil {
+                glass.effect = nil
+            }
+        }
+    }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         let r = min(bounds.width, bounds.height) / 2
+        if realGlass {
+            glass.frame = bounds
+            shapeGlass(glass, r)
+        }
         mirrorHost.frame = bounds
         mirrorHost.layer.cornerRadius = r
         overlay.frame = bounds
@@ -872,7 +915,6 @@ extension NativeChromePlugin {
                     ge.tintColor = UIColor(red: CGFloat(r / 255), green: CGFloat(g / 255), blue: CGFloat(b / 255), alpha: 0.16)
                     gl.effect = ge
                 } else { gl.effect = UIBlurEffect(style: .systemUltraThinMaterialDark) }
-                gl.clipsToBounds = true
                 gl.layer.cornerCurve = .continuous
                 gl.alpha = 0
                 if gl.superview !== sup { sup.insertSubview(gl, aboveSubview: iv) }
@@ -898,7 +940,7 @@ extension NativeChromePlugin {
             guard let gl = self.morphGlass else { call.resolve(); return }
             UIView.performWithoutAnimation {
                 gl.frame = CGRect(x: x, y: y, width: max(0, w), height: max(0, h))
-                gl.layer.cornerRadius = CGFloat(rad)
+                shapeGlass(gl, CGFloat(rad))
                 gl.alpha = CGFloat(o)
             }
             call.resolve()
@@ -1178,8 +1220,8 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
 
     static func glass() -> UIVisualEffectView {
         let v = UIVisualEffectView(effect: nil)
-        v.clipsToBounds = true
         v.layer.cornerCurve = .continuous
+        shapeGlass(v, 22)
         return v
     }
 
@@ -1349,7 +1391,7 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
         let miniH: CGFloat = hasSong ? 62 : 0, tabsH: CGFloat = 62
         let w = b.width - 24, h = miniH + tabsH
         put(dockGlass, CGRect(x: 12, y: b.height - safe.bottom - 10 - h, width: w, height: h))
-        dockGlass.layer.cornerRadius = 26
+        shapeGlass(dockGlass, 26)
         miniRow.frame = CGRect(x: 0, y: 0, width: w, height: 62)
         miniRow.alpha = hasSong ? 1 : 0
         divider.frame = CGRect(x: 0, y: miniH, width: w, height: hasSong ? 0.5 : 0)
@@ -1388,7 +1430,7 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
         let pillX = b.width - safe.right - 12 - 68
         let pillY = b.height / 2 - pillH / 2 - (tucked ? 40 : 0)
         put(pillGlass, CGRect(x: pillX, y: pillY, width: 68, height: pillH))
-        pillGlass.layer.cornerRadius = 34
+        shapeGlass(pillGlass, 34)
         tabsRow.frame = pillGlass.bounds
         for (i, tb) in tabButtons.enumerated() {
             tb.transform = .identity
@@ -1406,7 +1448,7 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
             let tuckH: CGFloat = 86
             let y = min(b.height / 2 - 40 + pillH / 2 + 8, b.height - 6 - tuckH)
             put(miniGlass, CGRect(x: pillX, y: y, width: 68, height: tuckH))
-            miniGlass.layer.cornerRadius = 22
+            shapeGlass(miniGlass, 22)
             miniRow.frame = miniGlass.bounds
             let zoom: CGFloat = pinned ? 1 : 1.42             // zoomed in to fill the bubble (corners cropped by it)
             artClip.transform = .identity
@@ -1419,7 +1461,7 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
             track.frame = CGRect(x: 10, y: 78, width: 48, height: 2)
         } else {
             put(miniGlass, CGRect(x: left, y: bottom - fullH, width: fullW, height: fullH))
-            miniGlass.layer.cornerRadius = 22
+            shapeGlass(miniGlass, 22)
             miniRow.frame = miniGlass.bounds
             artClip.transform = .identity
             artClip.frame = CGRect(x: 9, y: 9, width: 48, height: 48)
@@ -1559,7 +1601,7 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
             let g: UIVisualEffectView
             let reused: Bool
             if let og = oldGroup, !usedOld { g = og; usedOld = true; reused = true }
-            else { g = GlassChrome.glass(); g.effect = glassEffect(interactive: true); g.layer.cornerRadius = 22; reused = false }
+            else { g = GlassChrome.glass(); g.effect = glassEffect(interactive: true); shapeGlass(g, 22); reused = false }
             let keep = Set(group.map { ObjectIdentifier($0) })
             for case let old as UIButton in g.contentView.subviews where !keep.contains(ObjectIdentifier(old)) {
                 if animated {                             // shrinks away into the capsule

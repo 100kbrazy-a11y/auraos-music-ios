@@ -85,9 +85,10 @@ export const nc = {
         const img = new Image();
         img.src = url;
         await img.decode();
-        const c = document.createElement("canvas");
-        c.width = c.height = 132;
+        const { sharedCanvas } = await import("./tags.js");
+        const c = sharedCanvas(132, "art");
         const s = Math.min(img.naturalWidth, img.naturalHeight);
+        c.getContext("2d").clearRect(0, 0, 132, 132);
         c.getContext("2d").drawImage(img, (img.naturalWidth - s) / 2, (img.naturalHeight - s) / 2, s, s, 0, 0, 132, 132);
         b64 = c.toDataURL("image/jpeg", 0.86).split(",")[1] || "";
       } catch {}

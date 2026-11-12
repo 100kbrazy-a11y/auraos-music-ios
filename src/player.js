@@ -1,3 +1,4 @@
+import { diag } from "./diag.js";
 import { lib } from "./library.js";
 import { MediaSession } from "@jofr/capacitor-media-session";
 
@@ -46,13 +47,38 @@ class Player extends EventTarget {
         const s = this.current;
         if (s && !s.duration && isFinite(a.duration) && a.duration > 0) lib.updateSong(s.id, { duration: a.duration });
       }));
-      a.addEventListener("error", live(() => this.emit("error")));
+      a.addEventListener("error", live(() => this.onMediaError(a)));
     }
     setInterval(() => this.updatePosition(), 5000);
     setInterval(() => this.checkCrossfade(), 200);
     this.setupSession();
   }
   get audio() { return this.els[this.cur]; }
+  /** A song wouldn't play: log why, check its file is really there, and try once more by loading it into memory. */
+  async onMediaError(a) {
+    const s = this.current;
+    const err = a.error;
+    const why = err ? `code ${err.code}${err.message ? " · " + err.message : ""}` : "unknown";
+    diag.log(`play failed: ${s?.title || "?"} (${s?.file || ""}) · ${why} · ${String(a.src).slice(0, 160)}`);
+    if (!s || !a.src || a.dataset.retried === s.id) { this.emit("error", { song: s, why }); return; }
+    a.dataset.retried = s.id;
+    try {
+      const probe = await fetch(a.src, { headers: { Range: "bytes=0-1" } });
+      if (!probe.ok) { diag.log(`play failed: the file isn't there (${probe.status})`); this.emit("error", { song: s, missing: true }); return; }
+      const r = await fetch(a.src, { headers: { Range: "bytes=0-" } });
+      const blob = await r.blob();
+      diag.log(`play retry from memory: ${Math.round(blob.size / 1024)} KB, type ${blob.type || s.type}`);
+      if (this.current !== s) return;
+      const url = URL.createObjectURL(blob.type ? blob : new Blob([blob], { type: s.type || "audio/mpeg" }));
+      a.dataset.url = this.url = url;
+      a.dataset.revoke = "1";
+      a.src = url;
+      await a.play();
+    } catch (e) {
+      diag.log(`play retry failed: ${e?.message || e}`);
+      this.emit("error", { song: s, why });
+    }
+  }
   get crossfade() { return Math.max(0, Math.min(12, +lib.meta.settings.crossfade || 0)); }
 
   emit(n, detail) { this.dispatchEvent(new CustomEvent(n, { detail })); }

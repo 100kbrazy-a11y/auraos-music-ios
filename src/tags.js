@@ -104,14 +104,24 @@ export async function loadImage(blob) {
   }
 }
 
+// iPhone's web view has a hard cap on memory for <canvas> and frees old canvases late: making a new one per cover
+// runs out part-way through a big pack and the later covers silently fail. So a few canvases are reused.
+const canvases = new Map();
+export function sharedCanvas(size, key = "") {
+  const k = size + key;
+  let cv = canvases.get(k);
+  if (!cv) { cv = document.createElement("canvas"); cv.width = cv.height = size; canvases.set(k, cv); }
+  return cv;
+}
+
 export async function squareJpeg(blob, size) {
   try {
     const img = await loadImage(blob);
     const w = img.naturalWidth, h = img.naturalHeight, s = Math.min(w, h);
     if (!s) return null;
-    const cv = document.createElement("canvas");
-    cv.width = cv.height = size;
+    const cv = sharedCanvas(size);
     const g = cv.getContext("2d");
+    g.clearRect(0, 0, size, size);
     g.imageSmoothingQuality = "high";
     g.drawImage(img, (w - s) / 2, (h - s) / 2, s, s, 0, 0, size, size);    // the centre square, scaled to fit
     return await new Promise((r) => cv.toBlob(r, "image/jpeg", 0.9));
@@ -128,9 +138,9 @@ export async function coverColor(blob) {
   try {
     const N = 40;
     const img = await loadImage(blob);
-    const cv = document.createElement("canvas");
-    cv.width = cv.height = N;
+    const cv = sharedCanvas(N, "read");
     const g = cv.getContext("2d", { willReadFrequently: true });
+    g.clearRect(0, 0, N, N);
     g.drawImage(img, 0, 0, N, N);                          // the whole cover, shrunk (not just its corner)
     const d = g.getImageData(0, 0, N, N).data;
     const B = 36, bins = Array.from({ length: B }, () => ({ w: 0, r: 0, g: 0, b: 0 }));

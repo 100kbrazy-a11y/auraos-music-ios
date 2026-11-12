@@ -42,7 +42,7 @@ async function client() {
       const mod = await import("youtubei.js/web");
       const { Innertube, Platform, UniversalCache } = mod;
       // YouTube.js has no JavaScript interpreter of its own for YouTube's scrambled player code: the web view is one
-      Platform.shim.eval = (data) => new Function(data.output)();
+      Platform.load({ ...Platform.shim, eval: (data) => new Function(data.output)() });
       const yt = await timed(Innertube.create({ fetch: nativeFetch, cache: new UniversalCache(false), retrieve_player: true }), 45000, "Connecting to YouTube");
       diag.log("YouTube: connected");
       return { mod, yt };
@@ -130,46 +130,47 @@ async function resolve(link) {
   return { title: "", playlist: false, tracks: [{ id: link.video }] };
 }
 
-/** A working audio address for one song: tries YouTube's app identities until one gives a downloadable m4a. */
-async function audioFor(id) {
+/** Download one song's audio: tries YouTube's app identities in turn until one of them gives a real m4a. */
+async function fetchAudio(id, onFrac) {
   const { mod, yt } = await client();
-  let last = "";
+  const reasons = [];
   for (const name of CLIENTS) {
     try {
       const info = await timed(yt.getBasicInfo(id, { client: name }), 30000, `Asking YouTube (${name})`);
       const ps = info.playability_status;
-      if (ps && ps.status && ps.status !== "OK") { last = `${name}: ${ps.status} ${ps.reason || ""}`.trim(); diag.log("YouTube: " + last); continue; }
+      if (ps && ps.status && ps.status !== "OK") { reasons.push(`${name}: ${ps.status}${ps.reason ? " – " + ps.reason : ""}`); diag.log("YouTube: " + reasons.at(-1)); continue; }
       let fmt;
       try { fmt = info.chooseFormat({ type: "audio", quality: "best", format: "mp4" }); }
-      catch { last = `${name}: no m4a audio`; diag.log("YouTube: " + last); continue; }
+      catch { reasons.push(`${name}: no m4a audio`); diag.log("YouTube: " + reasons.at(-1)); continue; }
       const url = await timed(fmt.decipher(yt.session.player), 30000, "Unscrambling the audio address");
       const ua = mod.Constants?.CLIENTS?.[name]?.USER_AGENT || navigator.userAgent;
-      const probe = await CapacitorHttp.request({ url: url + "&range=0-1023", method: "GET", headers: { "User-Agent": ua }, responseType: "text", connectTimeout: 15000, readTimeout: 20000 });
-      if (probe.status >= 400) { last = `${name}: download refused (${probe.status})`; diag.log("YouTube: " + last); continue; }
-      diag.log(`YouTube: ${name} works for ${id}`);
+      const size = +fmt.content_length || 0;
+      diag.log(`YouTube: ${name} gave an address for ${id} (${Math.round(size / 1024)} KB)`);
+      const file = await download(url, size, ua, id, onFrac);
       const b = info.basic_info || {};
-      return { url, ua, size: +fmt.content_length || 0, client: name,
-        meta: { title: b.title || "", artist: b.author || "", duration: b.duration || 0, thumb: lastThumb(b.thumbnail) } };
-    } catch (e) { last = `${name}: ${e.message || e}`; diag.log("YouTube: " + last); }
+      return { ...file, client: name, meta: { title: b.title || "", artist: b.author || "", duration: b.duration || 0, thumb: lastThumb(b.thumbnail) } };
+    } catch (e) { reasons.push(`${name}: ${e.message || e}`); diag.log("YouTube: " + reasons.at(-1)); }
   }
-  throw new Error("YouTube wouldn't let the app download this one" + (last ? ` (${last})` : ""));
+  throw new Error(reasons.at(-1) ? `YouTube refused every way in (${reasons[0]})` : "YouTube refused");
 }
 
 /** Download to Library/Incoming natively (straight to a file; never through the web view). */
-async function download(a, id, onFrac) {
+async function download(url, size, ua, id, onFrac) {
   const { Filesystem, Directory } = await import("@capacitor/filesystem");
   const rel = `Incoming/yt-${id}-${Date.now().toString(36)}.m4a`;
   let sub = null;
+  try { sub = await Filesystem.addListener("progress", (p) => { if (p.contentLength > 0) onFrac?.(p.bytes / p.contentLength); }); } catch {}
   try {
-    sub = await Filesystem.addListener("progress", (p) => { if (p.contentLength > 0) onFrac?.(p.bytes / p.contentLength); });
-  } catch {}
-  try {
-    const url = a.size ? `${a.url}&range=0-${a.size - 1}` : a.url;
-    await timed(Filesystem.downloadFile({ url, path: rel, directory: Directory.Library, headers: { "User-Agent": a.ua }, recursive: true, progress: true }), 300000, "Downloading");
-    const st = await Filesystem.stat({ path: rel, directory: Directory.Library });
-    if (!st || st.size < 10000) throw new Error(`the download came back empty (${st?.size || 0} bytes)`);
-    diag.log(`YouTube: downloaded ${Math.round(st.size / 1024)} KB`);
-    return { rel, size: st.size };
+    const full = size ? `${url}&range=0-${size - 1}` : url;
+    const r = await timed(Filesystem.downloadFile({ url: full, path: rel, directory: Directory.Library, headers: { "User-Agent": ua }, recursive: true, progress: true }), 300000, "Downloading");
+    let got = 0;
+    try { got = (await Filesystem.stat({ path: rel, directory: Directory.Library })).size || 0; } catch {}
+    diag.log(`YouTube: download finished · ${Math.round(got / 1024)} KB${r?.status ? " · HTTP " + r.status : ""}`);
+    if (got < 20000 || (size && got < size * 0.9)) {
+      try { await Filesystem.deleteFile({ path: rel, directory: Directory.Library }); } catch {}
+      throw new Error(`download refused (${got} bytes)`);
+    }
+    return { rel, size: got };
   } finally { try { await sub?.remove(); } catch {} }
 }
 
@@ -191,12 +192,15 @@ export async function importLink(text, lib, onProgress) {
     const base = i / tracks.length, span = 1 / tracks.length;
     onProgress?.(base, `${i + 1} of ${tracks.length}${t.title ? ` · ${t.title}` : ""}`);
     try {
-      diag.step = `Finding the audio · ${t.title || t.id}`;
-      const a = await audioFor(t.id);
+      diag.step = `Downloading · ${t.title || t.id}`;
+      if (t.title) {
+        const pre = tidy({ title: t.title, artist: t.artist, album: t.album });
+        const had = lib.existing({ ...pre, duration: t.duration || 0 });
+        if (had) { skipped++; order.push(had.id); continue; }
+      }
+      const a = await fetchAudio(t.id, (f) => onProgress?.(base + span * 0.9 * f, `${i + 1} of ${tracks.length}${t.title ? ` · ${t.title}` : ""}`));
       const tags = tidy({ title: t.title || a.meta.title, artist: t.artist || a.meta.artist, album: t.album });
-      if (lib.existing({ ...tags })) { skipped++; order.push(lib.existing({ ...tags }).id); continue; }
-      diag.step = `Downloading · ${tags.title}`;
-      const file = await download(a, t.id, (f) => onProgress?.(base + span * 0.9 * f, `${i + 1} of ${tracks.length} · ${tags.title}`));
+      const file = a;
       let cover = null;
       try { cover = await getBlob(bigThumb(t.thumb || a.meta.thumb, t.id)); } catch {}
       if (!cover || cover.size < 2000) { try { cover = await getBlob(`https://i.ytimg.com/vi/${t.id}/hqdefault.jpg`); } catch {} }
@@ -211,6 +215,7 @@ export async function importLink(text, lib, onProgress) {
       firstError ||= e.message || String(e);
       diag.log(`YouTube: couldn't add ${t.title || t.id}: ${e.message || e}`);
     }
+    if (failed >= 3 && !added && !skipped) { diag.log("YouTube: the first 3 all failed — stopping"); failed += tracks.length - i - 1; break; }
   }
   onProgress?.(1, "Done");
   let plName = null;

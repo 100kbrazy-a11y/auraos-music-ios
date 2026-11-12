@@ -294,6 +294,29 @@ class Library extends EventTarget {
     this.rebuild();
   }
 
+  /** Songs without a cover: use their album's cover if it has one now, else the picture inside the song's own file
+   *  (covers that failed to save during a big import). Returns how many were fixed. */
+  async repairCovers(onFix) {
+    let fixed = 0;
+    for (const s of [...this.songs.values()]) {
+      if (s.cover && this.covers.has(s.cover)) continue;
+      if (s.coverChecked === COLOR_VERSION) continue;          // looked already: the file has no picture
+      try {
+        let id = hash(albumKey(s));
+        if (!this.covers.has(id)) {
+          const blob = await songBlob(s);
+          if (!blob) continue;
+          const { picture } = await timed(readTags(blob, s.file), 60000, `Reading the cover of ${s.title}`);
+          id = picture ? await this.storeCover(s, picture) : null;
+        }
+        if (id && this.covers.has(id)) { await this.updateSong(s.id, { cover: id }); fixed++; onFix?.(s); }
+        else await this.updateSong(s.id, { coverChecked: COLOR_VERSION });
+      } catch (e) { diag.log(`cover repair: ${s.title}: ${e?.message || e}`); }
+    }
+    if (fixed) { diag.log(`cover repair: fixed ${fixed}`); this.rebuild(); }
+    return fixed;
+  }
+
   async updateSong(id, fields) {
     const s = this.songs.get(id);
     Object.assign(s, fields);

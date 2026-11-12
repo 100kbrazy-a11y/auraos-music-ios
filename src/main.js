@@ -201,7 +201,7 @@ function showDiagnostics() {
   openSheet(h("div", {}, h("h3", {}, "Diagnostics"), h("p", {}, "What the app did recently. Copy it and send it along when something goes wrong."), pre,
     h("div", { class: "btns" },
       h("button", { class: "btn text", onclick: () => { diag.clear(); pre.textContent = "Cleared."; } }, "Clear"),
-      h("button", { class: "btn", onclick: async () => { try { await navigator.clipboard.writeText(diag.text()); snack("Copied"); } catch { snack("Couldn't copy — select the text instead"); } } }, "Copy"))),
+      h("button", { class: "btn", onclick: async () => { try { await navigator.clipboard.writeText("AuraOS diagnostics (newest first)\n" + diag.text().split("\n").reverse().join("\n")); snack("Copied"); } catch { snack("Couldn't copy — select the text instead"); } } }, "Copy"))),
   { dialog: true });
   setTimeout(() => { pre.scrollTop = pre.scrollHeight; }, 30);
 }
@@ -1481,7 +1481,7 @@ async function importPacks(files) {
     dropPicked(f.picked);                  // the copy the picker made isn't needed any more
   }
   refresh();
-  findCovers(false);
+  lib.repairCovers().then((n) => { if (n) refresh(); findCovers(false); });
 }
 // ---- iPhone: when you leave the app or lock the phone, the music carries on in the phone's own player
 // (the web view can't keep playing in the background). Everything it needs is ready ahead of time, because once the
@@ -2596,7 +2596,16 @@ player.addEventListener("track", (e) => {
 });
 player.addEventListener("state", () => { updateMini(); npState(); pageEl?.querySelectorAll(".row.now").forEach((r) => r.classList.toggle("paused", !player.playing)); });
 player.addEventListener("time", () => { if (!vizOn) updateProgress(); });
-player.addEventListener("error", () => snack("Couldn't play this song"));
+player.addEventListener("error", (e) => {
+  const s = e.detail?.song;
+  if (e.detail?.missing && s) {        // left behind by an import that didn't finish: offer to clear it out
+    snack(`“${s.title}” isn't on this phone any more (its import didn't finish). Add it again to play it.`, "Remove", async () => {
+      await lib.removeSongs([s.id]); refresh();
+    }, 9000);
+    return;
+  }
+  snack("Couldn't play this song", "Details", showDiagnostics, 7000);
+});
 player.addEventListener("restart", () => updateProgress());
 lib.addEventListener("favs", () => updateNpFav());
 
@@ -2705,7 +2714,10 @@ async function boot() {
   }
   await restoreSession();
   // songs added before the colour picking improved: recompute their colours quietly, then refresh what's on screen
-  setTimeout(() => lib.refreshColors((id) => { if (player.current?.cover === id) npTrack(0); }).then(() => { if (pageEl) refresh(); }), 1500);
+  setTimeout(() => lib.refreshColors((id) => { if (player.current?.cover === id) npTrack(0); })
+    .then(() => lib.repairCovers())                           // covers that didn't save during an import
+    .then((n) => { if (n) { refresh(); if (player.current) npTrack(0); } })
+    .then(() => { if (pageEl) refresh(); }), 1500);
   if (ios) {
     // the keyboard covers the bottom of the screen on iPhone; lift sheets above it
     const vv = window.visualViewport;

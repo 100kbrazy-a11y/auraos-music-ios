@@ -37,7 +37,7 @@ export async function putSongFile(blob, file, source) {
     const name = file.replace(/^.*\//, "");
     diag.step = `Saving ${name}`;
     await timed(NC.copyIn({ from: source.path, offset: source.offset || 0, length: source.length ?? -1, to: ROOT + file }), 120000, `Saving ${name}`);
-    diag.log(`saved ${file} (${Math.round(blob.size / 1024)} KB, copied natively)`);
+    diag.step = `Saved ${name}`;
     return "disk";
   }
   if (!onDisk) {
@@ -55,7 +55,7 @@ export async function putSongFile(blob, file, source) {
     if (i === 0) await timed(fsx.writeFile({ directory: DIR, path, data, recursive: true }), 45000, `Saving ${name} (part 1)`);
     else await timed(fsx.appendFile({ directory: DIR, path, data }), 45000, `Saving ${name} (part ${i + 1})`);
   }
-  diag.log(`saved ${file} (${Math.round(blob.size / 1024)} KB, ${n} parts)`);
+  diag.step = `Saved ${name}`;
   return "disk";
 }
 
@@ -70,7 +70,7 @@ export async function songURL(s) {
 export async function songBlob(s) {
   if (s.store === "disk") {
     const u = await songURL(s);
-    const r = await fetch(u.url);
+    const r = await fetch(u.url, { headers: { Range: "bytes=0-" } });   // (the app's file server needs a Range)
     if (!r.ok) return null;
     const b = await r.blob();
     return b.type ? b : new Blob([b], { type: s.type || "" });
