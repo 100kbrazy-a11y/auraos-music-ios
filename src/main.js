@@ -1524,36 +1524,39 @@ function pageBrowse() {
 }
 
 function browseResults(q, useRecent) {
+  // nothing typed: recent searches (if any), then everything in the library, laid out just like search results
+  const out = [];
   if (!q) {
+    if (!lib.songs.size) return [h("div", { class: "empty" }, h("div", { class: "big" }, icon("search")), h("h3", {}, "Search your music"),
+      h("div", {}, "Find songs, albums, artists and genres. Play a song from here and you'll get a mix of similar ones."))];
     const list = recents();
-    if (!list.length) return [h("div", { class: "empty" }, h("div", { class: "big" }, icon("search")), h("h3", {}, "Search your music"),
-      h("div", {}, "Find songs, albums, artists and genres. Play a song from here and you'll get a mix of similar ones.") )];
-    const out = [h("div", { class: "section-t row-t" }, h("span", {}, "Recent Searches"),
-      h("button", { class: "link", onclick: () => { lib.meta.recent = []; lib.saveMeta(); refresh(); } }, "Clear"))];
-    for (const r of list) {
-      const row = h("div", { class: "row recent" }, h("div", { class: "num" }, icon("history")), h("div", { class: "meta" }, h("div", { class: "t" }, r)),
-        ib("close", (e) => { e.stopPropagation(); lib.meta.recent = recents().filter((x) => x !== r); lib.saveMeta(); refresh(); }, "", "Remove"));
-      press(row, () => useRecent(r));
-      out.push(row);
+    if (list.length) {
+      out.push(h("div", { class: "section-t row-t" }, h("span", {}, "Recent Searches"),
+        h("button", { class: "link", onclick: () => { lib.meta.recent = []; lib.saveMeta(); refresh(); } }, "Clear")));
+      for (const r of list.slice(0, 5)) {
+        const row = h("div", { class: "row recent" }, h("div", { class: "num" }, icon("history")), h("div", { class: "meta" }, h("div", { class: "t" }, r)),
+          ib("close", (e) => { e.stopPropagation(); lib.meta.recent = recents().filter((x) => x !== r); lib.saveMeta(); refresh(); }, "", "Remove"));
+        press(row, () => useRecent(r));
+        out.push(row);
+      }
     }
-    return out;
   }
-  const low = q.toLowerCase();
-  const m = (x) => (x || "").toLowerCase().includes(low);
+  const low = (q || "").toLowerCase();
+  const m = (x) => !low || (x || "").toLowerCase().includes(low);
   const songs = lib.sortedSongs.filter((s) => m(s.title) || m(s.artist) || m(s.album) || m(s.genre));
   const albums = lib.albums.filter((a) => m(a.title) || m(a.artist));
   const artists = lib.artists().filter((a) => m(a.name));
-  const out = [];
+  const all = !q;
   if (artists.length) {
-    out.push(h("div", { class: "section-t" }, "Artists"));
-    for (const a of artists.slice(0, 6)) {
+    out.push(h("div", { class: "section-t" }, all ? `Artists · ${artists.length}` : "Artists"));
+    for (const a of all ? artists : artists.slice(0, 6)) {
       const r = h("div", { class: "arow" }, art(a.cover, { label: a.name, round: true }), h("div", {}, h("div", { class: "t" }, a.name), h("div", { class: "s" }, plural(a.songs.size, "song"))));
       press(r, () => push({ type: "artist", name: a.name }));
       out.push(r);
     }
   }
-  if (albums.length) out.push(h("div", { class: "section-t" }, "Albums"), h("div", { class: "hscroll" }, albums.slice(0, 20).map(albumCard)));
-  if (songs.length) out.push(h("div", { class: "section-t" }, "Songs"), songList(songs.slice(0, 100), { ctx: "Search", mix: true }));
+  if (albums.length) out.push(h("div", { class: "section-t" }, all ? `Albums · ${albums.length}` : "Albums"), h("div", { class: "hscroll" }, (all ? albums : albums.slice(0, 20)).map(albumCard)));
+  if (songs.length) out.push(h("div", { class: "section-t" }, all ? `Songs · ${songs.length}` : "Songs"), songList(all ? songs : songs.slice(0, 100), { ctx: all ? "Library" : "Search", mix: true }));
   if (!out.length) out.push(h("div", { class: "empty" }, `Nothing in your library matches “${q}”`));
   return out;
 }
@@ -1926,37 +1929,86 @@ function prepareNp() {
 // Everything is a function of p, so a finger can hold it at any in-between stage; letting go hands it to a spring.
 const SPRING_OPEN = { k: 210, c: 21 }, SPRING_CLOSE = { k: 240, c: 24 }, SPRING_BACK = { k: 260, c: 22 };
 const morph = {
-  p: 0, v: 0, rect: null, raf: 0, active: false,
+  p: 0, v: 0, rect: null, raf: 0, active: false, nat: null,
   dist() { return Math.max(220, (this.rect?.top || innerHeight * 0.8) * 0.8); },   // how far a finger travels for the whole morph
+  /** where the player's pieces sit when it's full screen (measured once per morph, with nothing moved) */
+  measure() {
+    const el = $("#np"), pieces = this.pieces();
+    for (const x of [np.stage, ...pieces.flip.map((f) => f.el), ...pieces.fade]) { x.style.transform = ""; x.style.opacity = ""; }
+    const R = (x) => x.getBoundingClientRect();
+    const titles = np.wrapEl.querySelector(".titles");
+    this.nat = { cover: R(np.cover), stage: R(np.stage), titles: R(titles), pp: R(np.pp) };
+    el.classList.add("morphing");
+  },
+  pieces() {
+    const w = np.wrapEl, ctrls = w.querySelector(".ctrls");
+    return {
+      flip: [{ el: w.querySelector(".titles"), from: "text", nat: "titles" }, { el: np.pp, from: "play", nat: "pp" }],
+      fade: [w.querySelector(".top"), w.querySelector(".lyr"), np.seek, w.querySelector(".times"), w.querySelector(".extras"),
+        ...[...ctrls.children].filter((c) => c !== np.pp), np.viz].filter(Boolean),
+    };
+  },
   set(p) {
     this.p = p; this.active = true;
     const el = $("#np"), r = this.rect || (this.rect = anchorRect());
+    if (!this.nat) this.measure();
     const W = innerWidth, H = innerHeight, q = Math.max(-0.12, Math.min(1.12, p));
-    const e = (a, b) => a + (b - a) * q;
-    const rad = q <= 0 ? 0 : Math.min(44, 300 * q) * (1 - Math.min(1, q)) + 26 * Math.min(1, q);   // corners round off first
-    el.style.clipPath = `inset(${e(0, r.top).toFixed(1)}px ${e(0, W - r.right).toFixed(1)}px ${e(0, H - r.bottom).toFixed(1)}px ${e(0, r.left).toFixed(1)}px round ${rad.toFixed(1)}px)`;
-    const cy = (r.top + r.bottom) / 2 - H / 2;
-    np.wrapEl.style.transform = `translate3d(0, ${(cy * q * 0.92).toFixed(1)}px, 0) scale(${(1 - 0.16 * q).toFixed(4)})`;
-    np.wrapEl.style.opacity = String(Math.max(0, Math.min(1, 1 - (q - 0.4) / 0.5)).toFixed(3));
-    np.bg.parentElement.style.setProperty("--morph", q.toFixed(3));
-    // a sheet of Liquid Glass forms over the player as it heads for the bubble (like pulling down the Lock Screen):
-    // it follows the shrinking rounded edge, and its strength follows the finger
-    if (!this.g?.isConnected) this.g = el.appendChild(h("div", { class: "lgm" }));
-    const gl = e(0, r.left), gt = e(0, r.top), gr = e(0, W - r.right), gb = e(0, H - r.bottom);
-    const k = Math.max(0, Math.min(1, q / 0.42)), o = 1 - (1 - k) * (1 - k);
+    const lerp = (a, b, t) => a + (b - a) * t;
+    const ss = (a, b, x) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+    // 1) the glass media bar stretches until it's almost full screen…  2) …then becomes the real full screen
+    const NEAR = 0.16, side = matchMedia("(orientation: landscape) and (min-width: 640px)").matches;
+    const full = { l: 0, t: 0, r: W, b: H };
+    const bubble = { l: r.left, t: r.top, r: r.right, b: r.bottom }, bubbleRad = side ? 22 : 26;
+    // one continuous stretch: it reaches "almost full screen" early, and only becomes the real player at the very end
+    const e = q >= 0 ? 1 - Math.pow(1 - Math.min(q, 1), 1.15) + Math.max(0, q - 1) : q;      // past 1 / below 0: the bounces
+    const rc = { l: lerp(full.l, bubble.l, e), t: lerp(full.t, bubble.t, e), r: lerp(full.r, bubble.r, e), b: lerp(full.b, bubble.b, e) };
+    const rad = q <= 0 ? 0 : Math.min(40, 400 * q) * (1 - Math.min(1, q)) + bubbleRad * Math.min(1, q);
+    el.style.clipPath = `inset(${rc.t.toFixed(1)}px ${(W - rc.r).toFixed(1)}px ${(H - rc.b).toFixed(1)}px ${rc.l.toFixed(1)}px round ${rad.toFixed(1)}px)`;
+    // the glass itself (behind the player's controls)
+    if (!this.g?.isConnected) this.g = el.insertBefore(h("div", { class: "lgm" }), np.wrapEl);
     const gs = this.g.style;
-    gs.display = o > 0.002 ? "block" : "none";
-    gs.left = gl.toFixed(1) + "px"; gs.top = gt.toFixed(1) + "px";
-    gs.width = Math.max(0, W - gl - gr).toFixed(1) + "px"; gs.height = Math.max(0, H - gt - gb).toFixed(1) + "px";
-    gs.borderRadius = rad.toFixed(1) + "px"; gs.opacity = o.toFixed(3);
+    const glassO = 1 - ss(0, NEAR, NEAR - q);            // full glass while stretching; fades as the real background arrives
+    gs.display = glassO > 0.002 ? "block" : "none";
+    gs.left = rc.l.toFixed(1) + "px"; gs.top = rc.t.toFixed(1) + "px";
+    gs.width = Math.max(0, rc.r - rc.l).toFixed(1) + "px"; gs.height = Math.max(0, rc.b - rc.t).toFixed(1) + "px";
+    gs.borderRadius = rad.toFixed(1) + "px"; gs.opacity = glassO.toFixed(3);
+    el.style.setProperty("--bgo", (1 - ss(0, NEAR + 0.08, q)).toFixed(3));    // the player's own background: only at the very end
+    // 3) the pieces travel from where they are in the bar to where they'll be
+    const u = ss(0.06, 1, q);
+    const parts = anchorParts(r), N = this.nat;
+    const flipTo = (x, from, nat, origin) => {
+      if (!from || !nat || !nat.width) return;
+      const sx = lerp(1, from.w / nat.width, u), sy = lerp(1, from.h / nat.height, u);
+      const s1 = origin === "uniform" ? Math.min(sx, sy) : null;
+      const dx = (from.x - nat.left) * u, dy = (from.y - nat.top) * u;
+      x.style.transformOrigin = "0 0";
+      x.style.transform = `translate3d(${dx.toFixed(1)}px, ${dy.toFixed(1)}px, 0) scale(${(s1 ?? sx).toFixed(4)}, ${(s1 ?? sy).toFixed(4)})`;
+    };
+    // the cover: move its stage so the cover lands exactly on the bar's album art
+    if (N.cover.width) {
+      const s1 = lerp(1, parts.art.w / N.cover.width, u);
+      const dx = (parts.art.x - N.cover.left) * u, dy = (parts.art.y - N.cover.top) * u;
+      np.stage.style.transformOrigin = `${(N.cover.left - N.stage.left).toFixed(1)}px ${(N.cover.top - N.stage.top).toFixed(1)}px`;
+      np.stage.style.transform = `translate3d(${dx.toFixed(1)}px, ${dy.toFixed(1)}px, 0) scale(${s1.toFixed(4)})`;
+    }
+    const pieces = this.pieces();
+    for (const f of pieces.flip) {
+      flipTo(f.el, parts[f.from], N[f.nat], "uniform");
+      f.el.style.opacity = (f.from === "text" || f.from === "play") && !parts.showText ? (1 - ss(0.3, 0.8, q)).toFixed(3) : "";
+    }
+    const cf = 1 - ss(0.12, 0.62, q);                    // everything else fades in and glides up into place
+    for (const x of pieces.fade) { x.style.opacity = cf.toFixed(3); x.style.transform = `translate3d(0, ${(28 * ss(0, 1, q)).toFixed(1)}px, 0)`; }
   },
   clear() {
     cancelAnimationFrame(this.raf);
-    this.active = false; this.p = 0; this.v = 0; this.rect = null;
+    this.active = false; this.p = 0; this.v = 0; this.rect = null; this.nat = null;
     if (this.g) this.g.style.display = "none";
     const el = $("#np");
-    el.style.clipPath = ""; el.style.transform = "";
+    el.style.clipPath = ""; el.style.transform = ""; el.style.removeProperty("--bgo");
+    el.classList.remove("morphing");
     np.wrapEl.style.transform = ""; np.wrapEl.style.opacity = "";
+    const pieces = this.pieces();
+    for (const x of [np.stage, ...pieces.flip.map((f) => f.el), ...pieces.fade]) { x.style.transform = ""; x.style.opacity = ""; x.style.transformOrigin = ""; }
   },
   animate(to, sp, done) {
     cancelAnimationFrame(this.raf);
@@ -1990,11 +2042,23 @@ const morph = {
 
 // the shape the player grows from / shrinks into: the bubble upright, the media bubble sideways
 function anchorRect() {
+  const a = nc.on && nc.anchorBox;                // iPhone: the native bubble says exactly where it is
+  if (a && a.w > 0) return { left: a.x, top: a.y, right: a.x + a.w, bottom: a.y + a.h, width: a.w, height: a.h };
   const side = matchMedia("(orientation: landscape) and (min-width: 640px)").matches;
   const el = side ? ($("#mini").hidden ? $("#tabs") : $("#mini")) : $("#dock");
   const r = el.getBoundingClientRect();
   if (side && miniTuck.tucked && !$("#mini").hidden) return { top: r.top, bottom: r.bottom, left: r.left, right: r.left + 68 };
   return r;
+}
+/** where the bar's album art, titles and play button are (for the pieces to travel from/to) */
+function anchorParts(r) {
+  const a = nc.on && nc.anchorBox;
+  if (a && a.aw > 0) return { art: { x: a.ax, y: a.ay, w: a.aw, h: a.ah }, text: { x: a.tx, y: a.ty, w: a.tw, h: a.th }, play: { x: a.px, y: a.py, w: a.pw, h: a.ph }, showText: !a.tucked };
+  const side = matchMedia("(orientation: landscape) and (min-width: 640px)").matches, tucked = side && miniTuck.tucked;
+  const art = tucked ? { x: r.left + 10, y: r.top + 9, w: 48, h: 48 } : side ? { x: r.left + 9, y: r.top + 9, w: 48, h: 48 } : { x: r.left + 10, y: r.top + 9, w: 44, h: 44 };
+  const w = r.right - r.left;
+  return { art, text: { x: art.x + art.w + 12, y: r.top + 12, w: Math.max(40, w - art.w - 170), h: 40 },
+    play: side ? { x: r.right - 104, y: r.top + 10, w: 46, h: 46 } : { x: r.right - 100, y: r.top + 10, w: 42, h: 42 }, showText: !tucked };
 }
 const clipFor = (r, rad) => `inset(${Math.round(r.top)}px ${Math.round(innerWidth - r.right)}px ${Math.round(innerHeight - r.bottom)}px ${Math.round(r.left)}px round ${rad}px)`;
 function bounceBubble() {
@@ -2411,6 +2475,7 @@ async function boot() {
   await nc.start(TABS, {
     tab: (e) => goTab(e.id),
     back: () => back(),
+    anchor: (e) => { nc.anchorBox = e; },
     setting: (e) => applySetting(e.id, e.value),
     settingTap: (e) => settingAction(e.id),
     headAction: (e) => { const b = pageEl?.querySelector(".head")?.querySelectorAll(":scope > button:not(.back)")[e.id]; b?.click(); },

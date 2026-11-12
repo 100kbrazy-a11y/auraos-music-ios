@@ -736,6 +736,8 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
     var tabLabels: [UILabel] = []
     let lens = UIView()                    // the resting highlight behind the selected tab
     let lensGlass = UIVisualEffectView(effect: nil)   // the clear glass bubble over the tabs while your finger is on them
+    let lensShine = CAGradientLayer()
+    let lensGlow = CAGradientLayer()
     var magnified = -1
 
     // top bar
@@ -907,15 +909,25 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
         lensGlass.clipsToBounds = true
         lensGlass.layer.cornerCurve = .continuous
         lensGlass.alpha = 0
-        if #available(iOS 26.0, *) {
-            let g = UIGlassEffect(style: .clear)          // clear glass: bends and brightens the icons and titles under it
-            g.isInteractive = true
-            lensGlass.effect = g
-        } else {
-            lensGlass.backgroundColor = UIColor.white.withAlphaComponent(0.08)
-            lensGlass.layer.borderWidth = 0.5
-            lensGlass.layer.borderColor = UIColor.white.withAlphaComponent(0.35).cgColor
-        }
+        // completely clear (nothing blurred): glass made of light — a bright rim, a highlight across the top, a soft inner glow;
+        // the tab under it grows, like it's seen through a lens
+        lensGlass.effect = nil
+        lensGlass.backgroundColor = UIColor.white.withAlphaComponent(0.04)
+        lensGlass.layer.borderWidth = 1
+        lensGlass.layer.borderColor = UIColor.white.withAlphaComponent(0.55).cgColor
+        lensGlass.layer.shadowColor = UIColor.black.cgColor
+        lensGlass.layer.shadowOpacity = 0.18
+        lensGlass.layer.shadowRadius = 10
+        lensGlass.layer.shadowOffset = CGSize(width: 0, height: 4)
+        lensShine.colors = [UIColor.white.withAlphaComponent(0.38).cgColor, UIColor.white.withAlphaComponent(0.0).cgColor]
+        lensShine.startPoint = CGPoint(x: 0.5, y: 0)
+        lensShine.endPoint = CGPoint(x: 0.5, y: 0.55)
+        lensGlass.contentView.layer.addSublayer(lensShine)
+        lensGlow.colors = [UIColor.white.withAlphaComponent(0.0).cgColor, UIColor.white.withAlphaComponent(0.16).cgColor]
+        lensGlow.type = .radial
+        lensGlow.startPoint = CGPoint(x: 0.5, y: 0.5)
+        lensGlow.endPoint = CGPoint(x: 1.05, y: 1.05)
+        lensGlass.contentView.layer.addSublayer(lensGlow)
         root.addSubview(lensGlass)                        // above the bubble (glass nested inside glass turns milky)
         let press = UILongPressGestureRecognizer(target: self, action: #selector(tabPress(_:)))
         press.minimumPressDuration = 0
@@ -944,6 +956,32 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
         }
         placeLens(animated: animated)
         updateFill()
+        reportAnchor()
+    }
+
+    /// Tell the web side where the media bubble is (and its cover, titles and play button), for the grow/shrink animation.
+    var lastAnchor = ""
+    func reportAnchor() {
+        let land = landscape
+        let host: UIView = land ? (hasSong ? miniGlass : pillGlass) : dockGlass
+        let r = CGRect(x: host.center.x - host.bounds.width / 2, y: host.center.y - host.bounds.height / 2, width: host.bounds.width, height: host.bounds.height)
+        let rect = (land && tucked && hasSong) ? CGRect(x: r.minX, y: r.minY, width: 68, height: r.height) : (land || hasSong ? r : r)
+        func inRoot(_ v: UIView) -> CGRect {
+            let f = CGRect(x: v.center.x - v.bounds.width / 2, y: v.center.y - v.bounds.height / 2, width: v.bounds.width, height: v.bounds.height)
+            return (v.superview ?? root).convert(f, to: root)
+        }
+        let art = inRoot(artClip), text = inRoot(textBox), play = inRoot(playButton)
+        let d: [String: Any] = [
+            "x": Double(rect.minX), "y": Double(rect.minY), "w": Double(rect.width), "h": Double(rect.height),
+            "ax": Double(art.minX), "ay": Double(art.minY), "aw": Double(art.width), "ah": Double(art.height),
+            "tx": Double(text.minX), "ty": Double(text.minY), "tw": Double(text.width), "th": Double(text.height),
+            "px": Double(play.minX), "py": Double(play.minY), "pw": Double(play.width), "ph": Double(play.height),
+            "song": hasSong, "tucked": tucked && land,
+        ]
+        let key = d.keys.sorted().map { "\($0)=\(d[$0] ?? "")" }.joined(separator: ",")
+        if key == lastAnchor { return }
+        lastAnchor = key
+        plugin?.send("anchor", d)
     }
 
     func layoutUpright(_ b: CGRect, _ safe: UIEdgeInsets) {
@@ -1312,6 +1350,15 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
         }
     }
 
+    func sizeLensLayers() {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        lensShine.frame = lensGlass.bounds
+        lensShine.cornerRadius = lensGlass.layer.cornerRadius
+        lensGlow.frame = lensGlass.bounds
+        lensGlow.cornerRadius = lensGlass.layer.cornerRadius
+        CATransaction.commit()
+    }
+
     /// The tab under the glass bubble grows a little, like it's seen through a lens.
     func magnify(_ i: Int) {
         guard i != magnified else { return }
@@ -1354,6 +1401,7 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
             }
             let cRoot = tabsRow.convert(c, to: root)
             magnify(i)
+            defer { sizeLensLayers() }
             UIView.animate(withDuration: g.state == .began ? 0.35 : 0.12, delay: 0, usingSpringWithDamping: 0.75, initialSpringVelocity: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
                 self.lens.bounds = CGRect(origin: .zero, size: f.size)
                 self.lens.center = c
