@@ -1,0 +1,78 @@
+# Builds AuraOS Music for iPhone on GitHub's Mac machines and publishes AuraOS-Music.ipa.
+# The .ipa is unsigned: SideStore signs it with your Apple ID when it installs it.
+# Download link (stays the same for every build):
+#   https://github.com/<you>/<repo>/releases/latest/download/AuraOS-Music.ipa
+name: Build iPhone app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install packages
+        run: npm ci --no-audit --no-fund
+
+      - name: Build the app's web part
+        run: npm run build
+
+      - name: Prepare the iPhone project
+        run: |
+          [ -d ios/App ] || npx cap add ios
+          node scripts/patch-ios.mjs
+          npx cap sync ios
+
+      - name: Compile
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace ios/App/App.xcworkspace -scheme App -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            MARKETING_VERSION="$(node -p 'require("./package.json").version')" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build | grep -E "^(\*\*|error|warning: .*deprecated)|error:" || true
+          test -d build/Build/Products/Release-iphoneos/App.app || { echo "::error::The app didn't compile; see the log above"; exit 1; }
+
+      - name: Package AuraOS-Music.ipa
+        run: |
+          rm -rf Payload && mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/App.app Payload/
+          zip -qry AuraOS-Music.ipa Payload
+          ls -lh AuraOS-Music.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AuraOS-Music-ipa
+          path: AuraOS-Music.ipa
+          retention-days: 14
+
+      - name: Publish the download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="Build ${{ github.run_number }} ($(git log -1 --format=%h)). Install it with SideStore: open sidestore://install?url=https://github.com/${{ github.repository }}/releases/latest/download/AuraOS-Music.ipa on your iPhone."
+          if gh release view app >/dev/null 2>&1; then
+            gh release upload app AuraOS-Music.ipa --clobber
+            gh release edit app --notes "$notes" --latest
+          else
+            gh release create app AuraOS-Music.ipa --title "AuraOS Music for iPhone" --notes "$notes" --latest
+          fi

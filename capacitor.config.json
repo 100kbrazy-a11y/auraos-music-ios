@@ -1,0 +1,18 @@
+{
+  "appId": "com.auraos.music",
+  "appName": "AuraOS Music",
+  "webDir": "dist",
+  "backgroundColor": "#0b0b0e",
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  },
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#0b0b0e",
+    "scrollEnabled": false,
+    "allowsLinkPreview": false,
+    "preferredContentMode": "mobile"
+  }
+}
