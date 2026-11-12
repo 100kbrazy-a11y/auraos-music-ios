@@ -99,9 +99,9 @@ public class AuraPoPlugin extends Plugin {
             public void onPageFinished(WebView view, String url) {
                 if (view != web || ready) return;
                 ready = true;
-                List<Runnable> ws = new ArrayList<>(waiting);
+                List<Runnable> pending = new ArrayList<>(waiting);
                 waiting.clear();
-                for (Runnable r : ws) r.run();
+                for (Runnable r : pending) r.run();
             }
         });
         scriptKey = key;
@@ -112,10 +112,10 @@ public class AuraPoPlugin extends Plugin {
         web.loadDataWithBaseURL("https://www.youtube.com/", html, "text/html", "utf-8", null);
         main.postDelayed(() -> {
             if (web != null && !ready && scriptKey == key) {
-                List<Runnable> ws = new ArrayList<>(waiting);
+                List<Runnable> pending = new ArrayList<>(waiting);
                 waiting.clear();
                 ready = true;                     // try anyway; the call itself reports what went wrong
-                for (Runnable r : ws) r.run();
+                for (Runnable r : pending) r.run();
             }
         }, 15000);
     }
