@@ -16,6 +16,8 @@ export const diag = {
   /** what's happening right now (also logged) */
   set(step) { this.step = step; this.log(step); },
   text() { return lines.join("\n"); },
+  /** the last few lines, without the time */
+  recent(n = 3) { return lines.slice(-n).map((l) => l.replace(/^\S+ /, "")); },
   clear() { lines.length = 0; try { localStorage.removeItem(KEY); } catch {} },
 };
 function safeJson(o) { try { return JSON.stringify(o).slice(0, 400); } catch { return String(o); } }

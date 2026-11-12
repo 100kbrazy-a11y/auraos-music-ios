@@ -12,7 +12,7 @@ export const nc = {
   last: {},
   async start(tabs, handlers) {
     if (Capacitor.getPlatform() !== "ios" || !Capacitor.isPluginAvailable("NativeChrome")) return false;
-    try { await NC.start({ tabs: tabs.map((t) => ({ id: t.id, label: t.label, symbol: SYMBOLS[t.id] || "circle" })) }); }
+    try { const r = await NC.start({ tabs: tabs.map((t) => ({ id: t.id, label: t.label, symbol: SYMBOLS[t.id] || "circle" })) }); diag.log(`iOS ${r?.ios} · native glass ${r?.glass ? "on" : "off (needs iOS 26)"}`); }
     catch (e) { console.warn("native chrome unavailable", e); return false; }
     NC.addListener("event", (e) => handlers[e.type]?.(e));
     this.on = true;
@@ -44,6 +44,9 @@ export const nc = {
     this.lastHead = key;
     NC.header(m).catch(() => {});
   },
+  progressShow(title) { if (this.on) NC.progressShow({ title }).catch(() => {}); },
+  progressUpdate(o) { if (this.on) NC.progressUpdate(o).catch(() => {}); },
+  progressHide() { if (this.on) NC.progressHide().catch(() => {}); },
   hide() { if (!this.on) return; this.last.visible = false; NC.update({ visible: false }).catch(() => {}); },
   show(bounce) { if (!this.on) return; this.last.visible = true; NC.update({ visible: true, bounce: !!bounce }).catch(() => {}); },
   progress(pos, dur, playing) {
@@ -78,7 +81,7 @@ export const nc = {
     const { DiskFile } = await import("./files.js");
     const r = await NC.pickAudio({ kind: "pack" });
     diag.log(`picked ${(r?.files || []).length} pack(s)`);
-    return (r?.files || []).map((f) => new DiskFile(Capacitor.convertFileSrc(f.path), f.size || 0, f.name));
+    return (r?.files || []).map((f) => Object.assign(new DiskFile(Capacitor.convertFileSrc(f.path), f.size || 0, f.name, 0, f.size || 0, f.path), { picked: f.rel }));
   },
   async settings(sections, open) {
     if (this.on) await NC.settings({ sections, open: !!open }).catch((e) => console.warn("settings", e));
@@ -104,7 +107,12 @@ export const nc = {
           diag.log(`read ${f.name} another way: ${Math.round(b.size / 1024)} KB`);
         } catch (e) { console.warn("couldn't read", f.name, e); }
       }
-      if (b && b.size) out.push(new File([b], f.name, { type: b.type && !/octet-stream/.test(b.type) ? b.type : "" }));
+      if (b && b.size) {
+        const file = new File([b], f.name, { type: b.type && !/octet-stream/.test(b.type) ? b.type : "" });
+        file.source = { path: f.path, offset: 0, length: -1 };         // the copy the picker made: saved natively from there
+        file.picked = f.rel;
+        out.push(file);
+      }
     }
     return out;
   },

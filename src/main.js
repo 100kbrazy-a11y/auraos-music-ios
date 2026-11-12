@@ -8,7 +8,7 @@ import { persistStorage, usage } from "./store.js";
 import { squareJpeg, coverColor } from "./tags.js";
 import { idb } from "./store.js";
 import { diag } from "./diag.js";
-import { DiskFile } from "./files.js";
+import { DiskFile, dropPicked } from "./files.js";
 import { nc, symbolFor } from "./native-chrome.js";
 import { search as searchOnline, details as resultDetails, bestSongMatch, bestAlbumMatch, same } from "./lookup.js";
 
@@ -180,6 +180,14 @@ function confirmBox(title, message, ok = "Remove") {
   });
 }
 function progressBox(title) {
+  if (nc.on) {                     // iPhone: a Liquid Glass card that shows what it's doing, step by step
+    diag.step = ""; diag.log("progress: " + title);
+    nc.progressShow(title);
+    let f = 0, t = "", sent = "";
+    const push = () => { const o = { fraction: f, text: t, step: diag.step, log: diag.recent(3) }; const k = JSON.stringify(o); if (k !== sent) { sent = k; nc.progressUpdate(o); } };
+    const tick = setInterval(push, 250);
+    return { set(nf, nt) { f = nf; if (nt) t = nt; push(); }, close() { clearInterval(tick); diag.step = ""; nc.progressHide(); } };
+  }
   const bar = h("b"), txt = h("p", {}, "Starting…"), step = h("div", { class: "suffix" });
   openSheet(h("div", {}, h("h3", {}, title), h("div", { class: "progress" }, bar), txt, step), { dialog: true });
   $("#scrim").onclick = null;
@@ -1442,16 +1450,17 @@ async function importPacks(files) {
     try {
       const r = await lib.importPack(f, (x, t) => pb.set(x, t));
       pb.close();
-      if (!r.added && !r.skipped) { snack(r.failed ? `Couldn't read the ${plural(r.failed, "song")} in that pack` : "There were no songs in that file"); continue; }
+      if (!r.added && !r.skipped) { snack(r.failed ? `Couldn't read the ${plural(r.failed, "song")} in that pack: ${r.firstError}` : "There were no songs in that file", null, null, 12000); continue; }
       let msg = `Added “${r.title}”: ${plural(r.added, "song")}`;
       if (r.skipped) msg += ` (${r.skipped} you already had)`;
-      if (r.failed) msg += ` · ${r.failed} couldn't be read`;
+      if (r.failed) msg += ` · ${r.failed} couldn't be read (${r.firstError})`;
       if (r.playlist) msg += ` and the playlist “${r.playlist}”`;
       snack(msg, r.playlist ? "Open" : null, () => push({ type: "playlist", name: r.playlist }), 7000);
     } catch (e) {
       pb.close();
       snack("Couldn't add that pack: " + (e.message || e));
     }
+    dropPicked(f.picked);                  // the copy the picker made isn't needed any more
   }
   refresh();
   findCovers(false);
@@ -1473,11 +1482,12 @@ async function importAudio(files) {
   const pb = progressBox("Adding songs");
   const r = await lib.importFiles(files, (f, t) => pb.set(f, t));
   pb.close();
+  for (const f of files) dropPicked(f.picked);
   setTimeout(() => autoFill(r.songs || []), 4600);
   if (!r.added && !r.skipped && !r.failed && r.ignored) { snack("Those aren't music files (mp3, m4a, flac, wav, ogg…)"); return; }
   let msg = `Added ${plural(r.added, "song")}`;
   if (r.skipped) msg += ` · ${r.skipped} already in your library`;
-  if (r.failed) msg += ` · ${r.failed} couldn't be read`;
+  if (r.failed) msg += ` · ${r.failed} couldn't be read (${r.firstError})`;
   snack(msg);
   refresh();
 }

@@ -28,7 +28,15 @@ public class NativeChromePlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "pickAudio", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "header", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "settings", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "progressShow", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "libraryPath", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "copyIn", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "removeFile", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "progressUpdate", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "progressHide", returnType: CAPPluginReturnPromise),
     ]
+    var progressPanel: ProgressPanel?
+    var bgTask: UIBackgroundTaskIdentifier = .invalid
     let settingsNav = SettingsNav()
     var chrome: GlassChrome?
     let picker = AudioPicker()
@@ -47,7 +55,7 @@ public class NativeChromePlugin: CAPPlugin, CAPBridgedPlugin {
         DispatchQueue.main.async {
             guard let host = self.bridge?.viewController?.view else { call.reject("no view"); return }
             if self.chrome == nil { self.chrome = GlassChrome(host: host, tabs: tabs, plugin: self) }
-            call.resolve(["glass": GlassChrome.hasGlass])
+            call.resolve(["glass": GlassChrome.hasGlass, "ios": UIDevice.current.systemVersion])
         }
     }
 
@@ -165,9 +173,17 @@ extension NativeChromePlugin {
 final class AudioPicker: NSObject, UIDocumentPickerDelegate {
     var call: CAPPluginCall?
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        // move the picker's temporary copies into the app's own folder, so iOS can't clear them away mid-import
+        let inbox = NativeChromePlugin.library.appendingPathComponent("Incoming", isDirectory: true)
+        try? FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
         let files: [[String: Any]] = urls.map { u in
-            let size = (try? u.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            return ["name": u.lastPathComponent, "path": u.absoluteString, "size": size]
+            let rel = "Incoming/" + UUID().uuidString + "-" + u.lastPathComponent
+            let dest = NativeChromePlugin.library.appendingPathComponent(rel)
+            var use = u
+            if (try? FileManager.default.moveItem(at: u, to: dest)) != nil { use = dest }
+            else if (try? FileManager.default.copyItem(at: u, to: dest)) != nil { use = dest }
+            let size = (try? use.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            return ["name": u.lastPathComponent, "path": use.absoluteString, "size": size, "rel": use == dest ? rel : ""]
         }
         call?.resolve(["files": files])
         call = nil
@@ -190,6 +206,166 @@ extension NativeChromePlugin {
             else { self.settingsNav.update(sections) }
             call.resolve()
         }
+    }
+}
+
+extension NativeChromePlugin {
+    @objc func progressShow(_ call: CAPPluginCall) {
+        let title = call.getString("title") ?? ""
+        DispatchQueue.main.async {
+            guard let host = self.bridge?.viewController?.view else { call.resolve(); return }
+            self.progressPanel?.dismiss()
+            let p = ProgressPanel(host: host, title: title, tint: self.chrome?.tint ?? .systemPink)
+            self.progressPanel = p
+            if self.bgTask == .invalid {     // ask iOS for extra time if the app is switched away mid-import
+                self.bgTask = UIApplication.shared.beginBackgroundTask(withName: "AuraOS import") { [weak self] in
+                    guard let self = self else { return }
+                    UIApplication.shared.endBackgroundTask(self.bgTask)
+                    self.bgTask = .invalid
+                }
+            }
+            call.resolve()
+        }
+    }
+    @objc func progressUpdate(_ call: CAPPluginCall) {
+        let f = call.getDouble("fraction"), text = call.getString("text"), step = call.getString("step")
+        let log = (call.getArray("log") ?? []).compactMap { $0 as? String }
+        DispatchQueue.main.async { self.progressPanel?.update(fraction: f, text: text, step: step, log: log); call.resolve() }
+    }
+    @objc func progressHide(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            self.progressPanel?.dismiss()
+            self.progressPanel = nil
+            if self.bgTask != .invalid { UIApplication.shared.endBackgroundTask(self.bgTask); self.bgTask = .invalid }
+            call.resolve()
+        }
+    }
+}
+
+extension NativeChromePlugin {
+    static var library: URL { FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0] }
+
+    /// file:// URL of the app's Library folder (songs live in Library/Songs/…)
+    @objc func libraryPath(_ call: CAPPluginCall) {
+        call.resolve(["url": NativeChromePlugin.library.absoluteString])
+    }
+
+    /// Copy a song into the app: a whole picked file, or a byte range of a music pack (a stored zip entry).
+    /// Done here so the audio never has to pass through the web view.
+    @objc func copyIn(_ call: CAPPluginCall) {
+        guard let from = call.getString("from"), let to = call.getString("to"), let src = URL(string: from) else { call.reject("missing from/to"); return }
+        let offset = UInt64(max(0, call.getDouble("offset") ?? 0))
+        let length = call.getDouble("length") ?? -1
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let dest = NativeChromePlugin.library.appendingPathComponent(to)
+                try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+                if FileManager.default.fileExists(atPath: dest.path) { try FileManager.default.removeItem(at: dest) }
+                let input = try FileHandle(forReadingFrom: src)
+                defer { try? input.close() }
+                FileManager.default.createFile(atPath: dest.path, contents: nil)
+                let output = try FileHandle(forWritingTo: dest)
+                defer { try? output.close() }
+                try input.seek(toOffset: offset)
+                var left: Int64 = length < 0 ? Int64.max : Int64(length)
+                var written: Int64 = 0
+                while left > 0 {
+                    let n = Int(min(Int64(1 << 20), left))
+                    guard let chunk = try input.read(upToCount: n), !chunk.isEmpty else { break }
+                    try output.write(contentsOf: chunk)
+                    written += Int64(chunk.count)
+                    left -= Int64(chunk.count)
+                }
+                if length >= 0 && written != Int64(length) { throw NSError(domain: "AuraOS", code: 1, userInfo: [NSLocalizedDescriptionKey: "only \(written) of \(Int64(length)) bytes could be copied"]) }
+                call.resolve(["bytes": written])
+            } catch {
+                call.reject("Couldn't save the song: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    @objc func removeFile(_ call: CAPPluginCall) {
+        guard let to = call.getString("to") else { call.resolve(); return }
+        try? FileManager.default.removeItem(at: NativeChromePlugin.library.appendingPathComponent(to))
+        call.resolve()
+    }
+}
+
+/// A Liquid Glass card in the middle of the screen while something long runs (adding songs, packs…):
+/// title, progress bar, what it's on, and the last few steps it took.
+final class ProgressPanel {
+    let dim = UIView()
+    let card: UIVisualEffectView
+    let titleLabel = UILabel()
+    let bar = UIProgressView(progressViewStyle: .default)
+    let textLabel = UILabel()
+    let stepLabel = UILabel()
+    let logLabel = UILabel()
+
+    init(host: UIView, title: String, tint: UIColor) {
+        let c = UIVisualEffectView(effect: nil)
+        if #available(iOS 26.0, *) { c.effect = UIGlassEffect(style: .regular) } else { c.effect = UIBlurEffect(style: .systemThickMaterialDark) }
+        card = c
+        dim.frame = host.bounds
+        dim.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        dim.backgroundColor = UIColor.black.withAlphaComponent(0.28)
+        dim.alpha = 0
+        host.addSubview(dim)
+        card.clipsToBounds = true
+        card.layer.cornerRadius = 30
+        card.layer.cornerCurve = .continuous
+        dim.addSubview(card)
+        titleLabel.text = title
+        titleLabel.font = .systemFont(ofSize: 20, weight: .bold)
+        titleLabel.textColor = .white
+        titleLabel.numberOfLines = 2
+        bar.progressTintColor = tint
+        bar.trackTintColor = UIColor.white.withAlphaComponent(0.15)
+        textLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        textLabel.textColor = .white
+        textLabel.text = "Starting…"
+        textLabel.numberOfLines = 2
+        stepLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        stepLabel.textColor = UIColor.white.withAlphaComponent(0.75)
+        stepLabel.numberOfLines = 2
+        logLabel.font = .monospacedSystemFont(ofSize: 10.5, weight: .regular)
+        logLabel.textColor = UIColor.white.withAlphaComponent(0.5)
+        logLabel.numberOfLines = 4
+        let stack = UIStackView(arrangedSubviews: [titleLabel, bar, textLabel, stepLabel, logLabel])
+        stack.axis = .vertical
+        stack.spacing = 10
+        stack.setCustomSpacing(14, after: titleLabel)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        card.contentView.addSubview(stack)
+        card.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            card.centerXAnchor.constraint(equalTo: dim.centerXAnchor),
+            card.centerYAnchor.constraint(equalTo: dim.centerYAnchor),
+            card.widthAnchor.constraint(equalToConstant: min(360, host.bounds.width - 40)),
+            stack.leadingAnchor.constraint(equalTo: card.contentView.leadingAnchor, constant: 22),
+            stack.trailingAnchor.constraint(equalTo: card.contentView.trailingAnchor, constant: -22),
+            stack.topAnchor.constraint(equalTo: card.contentView.topAnchor, constant: 22),
+            stack.bottomAnchor.constraint(equalTo: card.contentView.bottomAnchor, constant: -22),
+        ])
+        card.transform = CGAffineTransform(scaleX: 0.9, y: 0.9)
+        UIView.animate(withDuration: 0.45, delay: 0, usingSpringWithDamping: 0.75, initialSpringVelocity: 0.4, options: [], animations: {
+            self.dim.alpha = 1
+            self.card.transform = .identity
+        })
+    }
+
+    func update(fraction: Double?, text: String?, step: String?, log: [String]) {
+        if let f = fraction { bar.setProgress(Float(max(0, min(1, f))), animated: true) }
+        if let t = text, !t.isEmpty { textLabel.text = t }
+        if let st = step { stepLabel.text = st; stepLabel.isHidden = st.isEmpty }
+        if !log.isEmpty { logLabel.text = log.joined(separator: "\n") }
+    }
+
+    func dismiss() {
+        UIView.animate(withDuration: 0.25, animations: {
+            self.dim.alpha = 0
+            self.card.transform = CGAffineTransform(scaleX: 0.94, y: 0.94)
+        }, completion: { _ in self.dim.removeFromSuperview() })
     }
 }
 
@@ -687,7 +863,7 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
             lensGlass.layer.borderWidth = 0.5
             lensGlass.layer.borderColor = UIColor.white.withAlphaComponent(0.35).cgColor
         }
-        tabsRow.addSubview(lensGlass)                     // on top of the icons
+        root.addSubview(lensGlass)                        // above the bubble (glass nested inside glass turns milky)
         let press = UILongPressGestureRecognizer(target: self, action: #selector(tabPress(_:)))
         press.minimumPressDuration = 0
         press.allowableMovement = 10_000
@@ -1117,20 +1293,23 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
             if g.state == .began { haptic.prepare() }
             if (lens.tag != i) { lens.tag = i; haptic.selectionChanged() }
             if g.state == .began {                     // the glass bubble appears where the highlight is, then follows the finger
+                root.bringSubviewToFront(lensGlass)
                 lensGlass.transform = .identity
                 lensGlass.bounds = lens.bounds
-                lensGlass.center = lens.center
+                lensGlass.center = tabsRow.convert(lens.center, to: root)
                 lensGlass.layer.cornerRadius = lens.layer.cornerRadius
             }
+            let cRoot = tabsRow.convert(c, to: root)
             magnify(i)
             UIView.animate(withDuration: g.state == .began ? 0.35 : 0.12, delay: 0, usingSpringWithDamping: 0.75, initialSpringVelocity: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
                 self.lens.bounds = CGRect(origin: .zero, size: f.size)
                 self.lens.center = c
                 self.lens.layer.cornerRadius = min(f.width, f.height) / 2
                 self.lens.transform = CGAffineTransform(scaleX: 1.12, y: 1.12)
-                self.lens.backgroundColor = UIColor.white.withAlphaComponent(0.1)
+                self.lens.backgroundColor = UIColor.white.withAlphaComponent(0)   // only the clear glass while dragging
+                self.lens.layer.borderColor = UIColor.clear.cgColor
                 self.lensGlass.bounds = CGRect(origin: .zero, size: f.size)
-                self.lensGlass.center = c
+                self.lensGlass.center = cRoot
                 self.lensGlass.layer.cornerRadius = min(f.width, f.height) / 2
                 self.lensGlass.transform = CGAffineTransform(scaleX: 1.22, y: 1.22)   // lifted, a bit bigger than the tab
                 self.lensGlass.alpha = 1
@@ -1138,9 +1317,10 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
         case .ended:
             let i = nearest()
             settleGlass(on: i)
-            UIView.animate(withDuration: 0.4, delay: 0, usingSpringWithDamping: 0.62, initialSpringVelocity: 0.5, options: [.allowUserInteraction, .beginFromCurrentState]) {
+            UIView.animate(withDuration: 0.4, delay: 0.15, usingSpringWithDamping: 0.62, initialSpringVelocity: 0.5, options: [.allowUserInteraction, .beginFromCurrentState]) {
                 self.lens.transform = .identity
                 self.lens.backgroundColor = UIColor.white.withAlphaComponent(0.14)
+                self.lens.layer.borderColor = UIColor.white.withAlphaComponent(0.22).cgColor
             }
             if i < tabs.count, let id = tabs[i]["id"] {
                 tab = id
@@ -1162,7 +1342,7 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
         let f = lensFrame(for: restFrame(tabButtons[i]))
         UIView.animate(withDuration: 0.45, delay: 0, usingSpringWithDamping: 0.7, initialSpringVelocity: 0.4, options: [.allowUserInteraction, .beginFromCurrentState], animations: {
             self.lensGlass.bounds = CGRect(origin: .zero, size: f.size)
-            self.lensGlass.center = CGPoint(x: f.midX, y: f.midY)
+            self.lensGlass.center = self.tabsRow.convert(CGPoint(x: f.midX, y: f.midY), to: self.root)
             self.lensGlass.layer.cornerRadius = min(f.width, f.height) / 2
             self.lensGlass.transform = .identity
         })

@@ -122,7 +122,7 @@ class Library extends EventTarget {
   }
 
   /** Add one audio blob with info (from the file's tags, optionally overridden). Returns {song, skipped}. */
-  async addAudio(blob, name, override = {}, folderCover = null) {
+  async addAudio(blob, name, override = {}, folderCover = null, source = null) {
     diag.step = `Reading tags · ${name}`;
     const { tags, picture } = await timed(readTags(blob, name), 60000, `Reading the tags of ${name}`);
     for (const [k, v] of Object.entries(override)) if (v !== undefined && v !== null && v !== "") tags[k] = v;
@@ -135,7 +135,7 @@ class Library extends EventTarget {
     const song = { id: uid(), file, ...tags, size: blob.size, added: Date.now(), type };
     diag.step = `Cover · ${name}`;
     song.cover = await timed(this.storeCover(tags, picture || folderCover), 30000, `Saving the cover of ${name}`);
-    song.store = await putSongFile(blob.type ? blob : new Blob([blob], { type }), file);
+    song.store = await putSongFile(blob.type ? blob : new Blob([blob], { type }), file, source || blob.source);
     await idb.put("songs", song);
     this.songs.set(song.id, song);
     return { song, skipped: false };
@@ -146,21 +146,22 @@ class Library extends EventTarget {
     const audio = list.filter((f) => isAudio(f.name, f.type));
     const images = list.filter((f) => /\.(jpe?g|png|webp)$/i.test(f.name));
     const folderCover = images.find((f) => /cover|folder|front/i.test(f.name)) || images[0] || null;
-    let added = 0, skipped = 0, failed = 0;
+    let added = 0, skipped = 0, failed = 0, firstError = "";
     const songs = [];
     for (let i = 0; i < audio.length; i++) {
       onProgress?.(i / audio.length, audio[i].name);
       try {
-        const r = await this.addAudio(audio[i], audio[i].name, {}, folderCover);
+        const r = await this.addAudio(audio[i], audio[i].name, {}, folderCover, audio[i].source);
         r.skipped ? skipped++ : (added++, songs.push(r.song));
       } catch (e) {
         console.warn("import failed", audio[i].name, e);
         diag.log(`import: failed ${audio[i].name}: ${e?.message || e}`);
+        firstError ||= String(e?.message || e);
         failed++;
       }
     }
     this.rebuild();
-    return { added, skipped, failed, songs, ignored: list.length - audio.length - images.length };
+    return { added, skipped, failed, firstError, songs, ignored: list.length - audio.length - images.length };
   }
 
   // ------------------------------------------------------------ music packs (same format as the desktop app)
@@ -175,7 +176,7 @@ class Library extends EventTarget {
     const covers = new Map();
     for (const e of entries) if (/(^|\/)(cover|folder|front)\.(jpe?g|png)$/i.test(e.name)) covers.set(e.name.replace(/[^/]*$/, ""), e);
     const audio = entries.filter((e) => isAudio(e.name) && !e.name.includes("__MACOSX"));
-    let added = 0, skipped = 0, failed = 0;
+    let added = 0, skipped = 0, failed = 0, firstError = "";
     const order = [];
     for (let i = 0; i < audio.length; i++) {
       const e = audio[i];
@@ -186,13 +187,15 @@ class Library extends EventTarget {
         delete fields.file; delete fields.duration;
         const dir = e.name.replace(/[^/]*$/, "");
         const cov = covers.get(dir) ? await covers.get(dir).blob() : null;
-        const blob = new Blob([await e.blob()], { type: mimeFor(extOf(e.name)) });
-        const r = await this.addAudio(blob, e.name.replace(/^.*\//, ""), fields, cov);
+        const raw = await e.blob();
+        const blob = new Blob([raw], { type: mimeFor(extOf(e.name)) });
+        const r = await this.addAudio(blob, e.name.replace(/^.*\//, ""), fields, cov, raw.source);
         r.skipped ? skipped++ : added++;
         order.push(r.song.id);
       } catch (err) {
         console.warn("pack: couldn't add", e.name, err);
         diag.log(`pack: failed ${e.name}: ${err?.message || err}`);
+        firstError ||= String(err?.message || err);
         failed++;
       }
     }
@@ -207,7 +210,7 @@ class Library extends EventTarget {
       }
     }
     const title = manifest.title || (file.name || "Music pack").replace(/-musicpack.*$/i, "").replace(/\.zip$/i, "");
-    return { added, skipped, failed, playlist, title };
+    return { added, skipped, failed, firstError, playlist, title };
   }
 
   async buildPack(title, songs, playlist, onProgress) {
