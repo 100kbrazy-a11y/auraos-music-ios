@@ -7,6 +7,8 @@ import UIKit
 import Capacitor
 import WebKit
 import UniformTypeIdentifiers
+import AVFoundation
+import MediaPlayer
 
 class MainViewController: CAPBridgeViewController {
     override func capacitorDidLoad() {
@@ -30,12 +32,24 @@ public class NativeChromePlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "settings", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "progressShow", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "libraryPath", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "haptic", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "chromeFade", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "bgStart", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "bgStop", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "npButton", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "morphBegin", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "morphFrame", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "morphEnd", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "copyIn", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "removeFile", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "progressUpdate", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "progressHide", returnType: CAPPluginReturnPromise),
     ]
     var progressPanel: ProgressPanel?
+    var npPlay: GlassCircle?
+    let bg = BackgroundPlayer()
+    var morphBack: UIImageView?          // a picture of the library, behind the (see-through) web view
+    var morphGlass: UIVisualEffectView?  // real Liquid Glass between that picture and the player's pieces
     var bgTask: UIBackgroundTaskIdentifier = .invalid
     let settingsNav = SettingsNav()
     var chrome: GlassChrome?
@@ -71,6 +85,7 @@ public class NativeChromePlugin: CAPPlugin, CAPBridgedPlugin {
     /// The page's top bar: title, back button, the page's buttons, and whether the page is scrolled.
     @objc func header(_ call: CAPPluginCall) {
         let title = call.getString("title") ?? "", back = call.getBool("back") ?? false, scrolled = call.getBool("scrolled") ?? false
+        let textVisible = call.getBool("textVisible") ?? true
         let actions: [[String: Any]] = (call.getArray("actions") ?? []).compactMap { item in
             guard let o = item as? JSObject else { return nil }
             var a: [String: Any] = [:]
@@ -81,7 +96,7 @@ public class NativeChromePlugin: CAPPlugin, CAPBridgedPlugin {
             a["on"] = (o["on"] as? Bool) ?? false
             return a
         }
-        DispatchQueue.main.async { self.chrome?.setHeader(title: title, back: back, scrolled: scrolled, actions: actions) }
+        DispatchQueue.main.async { self.chrome?.setHeader(title: title, back: back, scrolled: scrolled, actions: actions, textVisible: textVisible) }
         call.resolve()
     }
 
@@ -160,6 +175,11 @@ extension NativeChromePlugin {
             }
             let vc = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
             vc.allowsMultipleSelection = true
+            if packs {
+                // start in Downloads if iOS allows it (it otherwise opens wherever you were last time)
+                let dl = URL(fileURLWithPath: "/private/var/mobile/Library/Mobile Documents/com~apple~CloudDocs/Downloads", isDirectory: true)
+                vc.directoryURL = dl
+            }
             self.picker.call = call
             vc.delegate = self.picker
             guard let host = self.bridge?.viewController else { call.reject("no view"); return }
@@ -304,7 +324,7 @@ final class ProgressPanel {
 
     init(host: UIView, title: String, tint: UIColor) {
         let c = UIVisualEffectView(effect: nil)
-        if #available(iOS 26.0, *) { c.effect = UIGlassEffect(style: .regular) } else { c.effect = UIBlurEffect(style: .systemThickMaterialDark) }
+        if #available(iOS 26.0, *) { let ge = UIGlassEffect(style: .regular); ge.tintColor = tint.withAlphaComponent(0.16); c.effect = ge } else { c.effect = UIBlurEffect(style: .systemThickMaterialDark) }
         card = c
         dim.frame = host.bounds
         dim.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -640,6 +660,413 @@ final class SettingsScreen: UITableViewController {
     }
 }
 
+/// Haptics that fit the action.
+enum Haptics {
+    static let light = UIImpactFeedbackGenerator(style: .light)
+    static let medium = UIImpactFeedbackGenerator(style: .medium)
+    static let softG = UIImpactFeedbackGenerator(style: .soft)
+    static let rigid = UIImpactFeedbackGenerator(style: .rigid)
+    static let sel = UISelectionFeedbackGenerator()
+    static let note = UINotificationFeedbackGenerator()
+    static func tap() { light.impactOccurred() }                       // buttons, skips
+    static func press() { medium.impactOccurred(intensity: 0.8) }      // play / pause
+    static func soft() { softG.impactOccurred() }                      // opening / closing the player, sheets
+    static func tick() { sel.selectionChanged() }                      // moving across tabs, sliders, pickers
+    static func thud() { rigid.impactOccurred(intensity: 0.7) }        // landing (the bubble catching the player)
+    static func play(_ kind: String) {
+        switch kind {
+        case "press": press()
+        case "soft": soft()
+        case "tick": tick()
+        case "thud": thud()
+        case "success": note.notificationOccurred(.success)
+        case "warning": note.notificationOccurred(.warning)
+        case "error": note.notificationOccurred(.error)
+        default: tap()
+        }
+    }
+}
+
+/// A round button of clear Liquid Glass with a symbol on it (it bends what's behind it, and reacts to touch).
+final class GlassCircle: UIView {
+    let glass = UIVisualEffectView(effect: nil)
+    let icon = UIImageView()
+    var onTap: (() -> Void)?
+    var symbolSize: CGFloat = 30
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        if #available(iOS 26.0, *) {
+            let g = UIGlassEffect(style: .clear)
+            g.isInteractive = true
+            glass.effect = g
+        } else {
+            glass.effect = UIBlurEffect(style: .systemUltraThinMaterialDark)
+        }
+        glass.clipsToBounds = true
+        addSubview(glass)
+        icon.tintColor = .white
+        icon.contentMode = .center
+        icon.layer.shadowColor = UIColor.black.cgColor
+        icon.layer.shadowOpacity = 0.35
+        icon.layer.shadowRadius = 3
+        icon.layer.shadowOffset = CGSize(width: 0, height: 1)
+        glass.contentView.addSubview(icon)
+        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        glass.frame = bounds
+        glass.layer.cornerRadius = bounds.width / 2
+        icon.frame = glass.bounds
+    }
+    func setSymbol(_ name: String) {
+        icon.image = UIImage(systemName: name, withConfiguration: UIImage.SymbolConfiguration(pointSize: symbolSize, weight: .bold))
+    }
+    @objc func tapped() {
+        Haptics.press()
+        UIView.animate(withDuration: 0.12, animations: { self.transform = CGAffineTransform(scaleX: 0.9, y: 0.9) }, completion: { _ in
+            UIView.animate(withDuration: 0.35, delay: 0, usingSpringWithDamping: 0.5, initialSpringVelocity: 0.6, options: [.allowUserInteraction], animations: { self.transform = .identity })
+        })
+        onTap?()
+    }
+}
+
+extension NativeChromePlugin {
+    /// how visible the bubble, tabs and top bar are (0…1), set every frame while the player grows / shrinks
+    @objc func chromeFade(_ call: CAPPluginCall) {
+        let a = call.getDouble("a") ?? 1
+        DispatchQueue.main.async { self.chrome?.fade(CGFloat(a)); call.resolve() }
+    }
+
+    @objc func haptic(_ call: CAPPluginCall) {
+        let kind = call.getString("kind") ?? "tap"
+        DispatchQueue.main.async { Haptics.play(kind); call.resolve() }
+    }
+
+    /// The full player's play / pause as real clear glass, laid exactly over the web one while the player is open.
+    @objc func npButton(_ call: CAPPluginCall) {
+        let show = call.getBool("show") ?? false
+        let x = call.getDouble("x") ?? 0, y = call.getDouble("y") ?? 0, w = call.getDouble("w") ?? 0
+        let playing = call.getBool("playing") ?? false
+        DispatchQueue.main.async {
+            guard let host = self.bridge?.viewController?.view else { call.resolve(); return }
+            if self.npPlay == nil {
+                let b = GlassCircle(frame: .zero)
+                b.onTap = { [weak self] in self?.send("toggle") }
+                b.alpha = 0
+                host.addSubview(b)
+                self.npPlay = b
+            }
+            guard let b = self.npPlay else { call.resolve(); return }
+            if show && w > 0 {
+                host.bringSubviewToFront(b)
+                b.symbolSize = CGFloat(w) * 0.36
+                b.setSymbol(playing ? "pause.fill" : "play.fill")
+                b.bounds = CGRect(x: 0, y: 0, width: w, height: w)
+                b.center = CGPoint(x: x + w / 2, y: y + w / 2)
+                if b.alpha < 1 { UIView.animate(withDuration: 0.18) { b.alpha = 1 } }
+            } else if b.alpha > 0 {
+                UIView.animate(withDuration: 0.12) { b.alpha = 0 }
+            }
+            call.resolve()
+        }
+    }
+}
+
+/// A lens of clear glass: no blur — it shows a magnified copy of what's under it (so the icons and titles bend
+/// as it passes over them), with a bright rim, a highlight across the top and a soft inner glow.
+final class GlassLens: UIView {
+    let mirrorHost = UIView()
+    let overlay = UIView()
+    let shine = CAGradientLayer()
+    let glow = CAGradientLayer()
+    var mirror: UIView?
+    weak var source: UIView?
+    var magnification: CGFloat = 1.3
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        alpha = 0
+        mirrorHost.clipsToBounds = true
+        mirrorHost.layer.cornerCurve = .continuous
+        addSubview(mirrorHost)
+        overlay.isUserInteractionEnabled = false
+        overlay.layer.cornerCurve = .continuous
+        overlay.layer.borderWidth = 1
+        overlay.layer.borderColor = UIColor.white.withAlphaComponent(0.6).cgColor
+        overlay.backgroundColor = UIColor.white.withAlphaComponent(0.03)
+        glow.type = .radial
+        glow.colors = [UIColor.white.withAlphaComponent(0.0).cgColor, UIColor.white.withAlphaComponent(0.18).cgColor]
+        glow.startPoint = CGPoint(x: 0.5, y: 0.5)
+        glow.endPoint = CGPoint(x: 1.05, y: 1.05)
+        shine.colors = [UIColor.white.withAlphaComponent(0.42).cgColor, UIColor.white.withAlphaComponent(0.0).cgColor]
+        shine.startPoint = CGPoint(x: 0.5, y: 0)
+        shine.endPoint = CGPoint(x: 0.5, y: 0.5)
+        overlay.layer.addSublayer(glow)
+        overlay.layer.addSublayer(shine)
+        addSubview(overlay)
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.2
+        layer.shadowRadius = 10
+        layer.shadowOffset = CGSize(width: 0, height: 4)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let r = min(bounds.width, bounds.height) / 2
+        mirrorHost.frame = bounds
+        mirrorHost.layer.cornerRadius = r
+        overlay.frame = bounds
+        overlay.layer.cornerRadius = r
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        glow.frame = bounds; glow.cornerRadius = r
+        shine.frame = bounds; shine.cornerRadius = r
+        CATransaction.commit()
+        updateMirror()
+    }
+
+    /// take a picture of what's under it to magnify (call when the finger goes down)
+    func begin(source: UIView) {
+        self.source = source
+        mirror?.removeFromSuperview()
+        if let snap = source.snapshotView(afterScreenUpdates: false) {
+            mirror = snap
+            mirrorHost.addSubview(snap)
+        }
+        updateMirror()
+    }
+
+    /// keep the magnified copy lined up with what's under the lens
+    func updateMirror() {
+        guard let m = mirror, let src = source, let sup = superview else { return }
+        let c = sup.convert(center, to: src)
+        m.transform = .identity
+        m.bounds = src.bounds
+        m.transform = CGAffineTransform(scaleX: magnification, y: magnification)
+        m.center = CGPoint(x: bounds.midX + (src.bounds.midX - c.x) * magnification, y: bounds.midY + (src.bounds.midY - c.y) * magnification)
+    }
+}
+
+extension NativeChromePlugin {
+    /// Growing / shrinking the player with real Liquid Glass. The glass has to sit *behind* the player's pieces,
+    /// so: a picture of the library goes behind the web view, the glass goes over that picture, and the web view
+    /// turns see-through for the length of the animation. reuse: use the picture from when the player opened.
+    @objc func morphBegin(_ call: CAPPluginCall) {
+        let reuse = call.getBool("reuse") ?? false
+        let r = call.getDouble("r") ?? 0, g = call.getDouble("g") ?? 0, b = call.getDouble("b") ?? 0
+        DispatchQueue.main.async {
+            guard let web = self.bridge?.webView, let sup = web.superview else { call.resolve(["ok": false]); return }
+            let place = { (img: UIImage) in
+                let iv = self.morphBack ?? UIImageView()
+                iv.image = img
+                iv.frame = web.frame
+                iv.isHidden = false
+                if iv.superview !== sup { sup.insertSubview(iv, belowSubview: web) }
+                self.morphBack = iv
+                let gl = self.morphGlass ?? UIVisualEffectView(effect: nil)
+                if #available(iOS 26.0, *) {
+                    let ge = UIGlassEffect(style: .regular)
+                    ge.tintColor = UIColor(red: CGFloat(r / 255), green: CGFloat(g / 255), blue: CGFloat(b / 255), alpha: 0.16)
+                    gl.effect = ge
+                } else { gl.effect = UIBlurEffect(style: .systemUltraThinMaterialDark) }
+                gl.clipsToBounds = true
+                gl.layer.cornerCurve = .continuous
+                gl.alpha = 0
+                if gl.superview !== sup { sup.insertSubview(gl, aboveSubview: iv) }
+                self.morphGlass = gl
+                web.isOpaque = false
+                web.backgroundColor = .clear
+                web.scrollView.backgroundColor = .clear
+                call.resolve(["ok": true])
+            }
+            if reuse, let img = self.morphBack?.image, img.size == web.bounds.size { place(img); return }
+            let cfg = WKSnapshotConfiguration()
+            web.takeSnapshot(with: cfg) { img, _ in
+                guard let img = img else { call.resolve(["ok": false]); return }
+                place(img)
+            }
+        }
+    }
+
+    @objc func morphFrame(_ call: CAPPluginCall) {
+        let x = call.getDouble("x") ?? 0, y = call.getDouble("y") ?? 0, w = call.getDouble("w") ?? 0, h = call.getDouble("h") ?? 0
+        let rad = call.getDouble("rad") ?? 0, o = call.getDouble("o") ?? 1
+        DispatchQueue.main.async {
+            guard let gl = self.morphGlass else { call.resolve(); return }
+            UIView.performWithoutAnimation {
+                gl.frame = CGRect(x: x, y: y, width: max(0, w), height: max(0, h))
+                gl.layer.cornerRadius = CGFloat(rad)
+                gl.alpha = CGFloat(o)
+            }
+            call.resolve()
+        }
+    }
+
+    @objc func morphEnd(_ call: CAPPluginCall) {
+        let keep = call.getBool("keep") ?? false     // keep the library picture for when the player closes
+        DispatchQueue.main.async {
+            guard let web = self.bridge?.webView else { call.resolve(); return }
+            web.isOpaque = true
+            let bg = UIColor(red: 11 / 255, green: 11 / 255, blue: 14 / 255, alpha: 1)
+            web.backgroundColor = bg
+            web.scrollView.backgroundColor = bg
+            self.morphGlass?.alpha = 0
+            self.morphBack?.isHidden = true
+            if !keep { self.morphBack?.image = nil }
+            call.resolve()
+        }
+    }
+}
+
+extension NativeChromePlugin {
+    /// The app is going to the background (or the phone is being locked): keep the music going natively.
+    @objc func bgStart(_ call: CAPPluginCall) {
+        let items: [[String: Any]] = (call.getArray("items") ?? []).compactMap { $0 as? JSObject }.map { SettingsNav.plain($0) }
+        let index = Int(call.getDouble("index") ?? 0), position = call.getDouble("position") ?? 0
+        let repeatMode = call.getString("repeat") ?? "off"
+        var arts: [String: String] = [:]
+        for (k, v) in call.getObject("arts") ?? [:] { if let str = v as? String { arts[k] = str } }
+        DispatchQueue.main.async {
+            let ok = self.bg.start(items: items, index: index, position: position, repeatMode: repeatMode, arts: arts)
+            call.resolve(["ok": ok])
+        }
+    }
+    /// Back in the app: stop the native player and say where it got to.
+    @objc func bgStop(_ call: CAPPluginCall) {
+        DispatchQueue.main.async { call.resolve(self.bg.stop()) }
+    }
+}
+
+/// Plays the queue natively while the app is in the background or the phone is locked
+/// (with the lock screen / Control Center controls), so the music never stops.
+final class BackgroundPlayer: NSObject {
+    var player: AVPlayer?
+    var items: [[String: Any]] = []
+    var index = 0
+    var repeatMode = "off"
+    var arts: [String: MPMediaItemArtwork] = [:]
+    var endObs: NSObjectProtocol?
+    var targets: [(MPRemoteCommand, Any)] = []
+
+    func url(_ i: Int) -> URL? {
+        guard i >= 0, i < items.count, let s = items[i]["path"] as? String, !s.isEmpty else { return nil }
+        return URL(string: s)
+    }
+
+    func start(items: [[String: Any]], index: Int, position: Double, repeatMode: String, arts: [String: String]) -> Bool {
+        _ = stop()
+        self.items = items
+        self.repeatMode = repeatMode
+        self.arts = [:]
+        for (k, b64) in arts {
+            if let d = Data(base64Encoded: b64), let img = UIImage(data: d) {
+                self.arts[k] = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
+            }
+        }
+        guard url(index) != nil else { return false }
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
+        try? AVAudioSession.sharedInstance().setActive(true)
+        let p = AVPlayer()
+        p.actionAtItemEnd = .pause
+        player = p
+        endObs = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main) { [weak self] n in
+            guard let self = self, let it = n.object as? AVPlayerItem, it === self.player?.currentItem else { return }
+            self.ended()
+        }
+        go(to: index, at: position, play: true)
+        setupRemote()
+        return true
+    }
+
+    func go(to i: Int, at position: Double = 0, play: Bool = true) {
+        guard let p = player, let u = url(i) else { return }
+        index = i
+        p.replaceCurrentItem(with: AVPlayerItem(url: u))
+        if position > 0 { p.seek(to: CMTime(seconds: position, preferredTimescale: 600)) }
+        if play { p.play() }
+        updateInfo()
+    }
+
+    /// next playable song (skips ones that aren't stored as files)
+    func step(_ d: Int, wrap: Bool) -> Int? {
+        var i = index
+        for _ in 0..<max(1, items.count) {
+            i += d
+            if i >= items.count { if wrap { i = 0 } else { return nil } }
+            if i < 0 { if wrap { i = items.count - 1 } else { return nil } }
+            if url(i) != nil { return i }
+        }
+        return nil
+    }
+
+    func ended() {
+        if repeatMode == "one" { player?.seek(to: .zero); player?.play(); updateInfo(); return }
+        if let n = step(1, wrap: repeatMode == "all") { go(to: n) } else { player?.pause(); updateInfo() }
+    }
+
+    func setupRemote() {
+        let c = MPRemoteCommandCenter.shared()
+        func add(_ cmd: MPRemoteCommand, _ fn: @escaping (MPRemoteCommandEvent) -> MPRemoteCommandHandlerStatus) {
+            cmd.isEnabled = true
+            targets.append((cmd, cmd.addTarget(handler: fn)))
+        }
+        add(c.playCommand) { [weak self] _ in self?.player?.play(); self?.updateInfo(); return .success }
+        add(c.pauseCommand) { [weak self] _ in self?.player?.pause(); self?.updateInfo(); return .success }
+        add(c.togglePlayPauseCommand) { [weak self] _ in
+            guard let p = self?.player else { return .commandFailed }
+            if p.rate > 0 { p.pause() } else { p.play() }
+            self?.updateInfo(); return .success
+        }
+        add(c.nextTrackCommand) { [weak self] _ in
+            guard let self = self, let n = self.step(1, wrap: self.repeatMode != "off") else { return .noSuchContent }
+            self.go(to: n); return .success
+        }
+        add(c.previousTrackCommand) { [weak self] _ in
+            guard let self = self, let p = self.player else { return .commandFailed }
+            if p.currentTime().seconds > 3 { p.seek(to: .zero); self.updateInfo(); return .success }
+            if let n = self.step(-1, wrap: self.repeatMode != "off") { self.go(to: n) } else { p.seek(to: .zero); self.updateInfo() }
+            return .success
+        }
+        add(c.changePlaybackPositionCommand) { [weak self] e in
+            guard let e = e as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+            self?.player?.seek(to: CMTime(seconds: e.positionTime, preferredTimescale: 600)) { _ in self?.updateInfo() }
+            return .success
+        }
+    }
+
+    func updateInfo() {
+        guard let p = player, index < items.count else { return }
+        let it = items[index]
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: (it["title"] as? String) ?? "",
+            MPMediaItemPropertyArtist: (it["artist"] as? String) ?? "",
+            MPMediaItemPropertyAlbumTitle: (it["album"] as? String) ?? "",
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: max(0, p.currentTime().seconds.isFinite ? p.currentTime().seconds : 0),
+            MPNowPlayingInfoPropertyPlaybackRate: p.rate,
+        ]
+        if let d = it["duration"] as? Double { info[MPMediaItemPropertyPlaybackDuration] = d }
+        if let k = it["art"] as? String, let a = arts[k] { info[MPMediaItemPropertyArtwork] = a }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    /// stop and report where it got to
+    func stop() -> [String: Any] {
+        guard let p = player else { return ["active": false] }
+        let pos = p.currentTime().seconds
+        let out: [String: Any] = ["active": true, "index": index, "position": pos.isFinite ? pos : 0, "playing": p.rate > 0]
+        p.pause()
+        player = nil
+        if let o = endObs { NotificationCenter.default.removeObserver(o) }
+        endObs = nil
+        for (cmd, t) in targets { cmd.removeTarget(t) }
+        targets = []
+        return out
+    }
+}
+
 /// Lets touches through to the web view everywhere except on the glass.
 final class PassthroughView: UIView {
     var onLayout: (() -> Void)?
@@ -682,9 +1109,7 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
     var tabIcons: [UIImageView] = []
     var tabLabels: [UILabel] = []
     let lens = UIView()                    // the resting highlight behind the selected tab
-    let lensGlass = UIVisualEffectView(effect: nil)   // the clear glass bubble over the tabs while your finger is on them
-    let lensShine = CAGradientLayer()
-    let lensGlow = CAGradientLayer()
+    let lensGlass = GlassLens()               // the clear glass lens over the tabs while your finger is on them
     var magnified = -1
 
     // top bar
@@ -696,6 +1121,9 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
     var headTitle = "", headBack = false, headScrolled = false
     var headActions: [[String: Any]] = []
     var headKey = ""
+    var headTextVisible = true
+    let pillLens = GlassLens()
+    var pillPick = -1
     var covered = false
 
     // state
@@ -731,6 +1159,7 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
         topGlass.alpha = 0
         root.addSubview(topTitle)
         root.addSubview(topItems)
+        root.addSubview(pillLens)
         buildMini()
         buildTabs()
         root.onLayout = { [weak self] in self?.layout(animated: false) }
@@ -758,7 +1187,7 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
         if #available(iOS 26.0, *) {
             let g = UIGlassEffect(style: .regular)
             g.isInteractive = interactive
-            g.tintColor = tint.withAlphaComponent(0.12)      // a little of the song's colour (kept light so the glass stays clear)
+            g.tintColor = tint.withAlphaComponent(0.16)      // the song's colour, the same strength as everywhere else
             return g
         }
         return UIBlurEffect(style: .systemThinMaterialDark)
@@ -782,7 +1211,7 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
     func symbolButton(_ b: UIButton, _ name: String, size: CGFloat, glass: Bool) {
         let img = UIImage(systemName: name, withConfiguration: UIImage.SymbolConfiguration(pointSize: size, weight: .semibold))
         if glass, #available(iOS 26.0, *) {
-            var c = UIButton.Configuration.glass()
+            var c = UIButton.Configuration.clearGlass()     // clear glass, like the full player's play button
             c.image = img
             c.baseForegroundColor = .white
             c.cornerStyle = .capsule
@@ -808,9 +1237,9 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
         artistLabel.textColor = UIColor.white.withAlphaComponent(0.62)
         textBox.addSubview(titleLabel)
         textBox.addSubview(artistLabel)
-        symbolButton(prevButton, "backward.fill", size: 17, glass: false)
+        symbolButton(prevButton, "backward.end.fill", size: 17, glass: false)     // same shapes as the full player's buttons
         symbolButton(playButton, "play.fill", size: 19, glass: true)
-        symbolButton(nextButton, "forward.fill", size: 17, glass: false)
+        symbolButton(nextButton, "forward.end.fill", size: 17, glass: false)
         prevButton.addTarget(self, action: #selector(prevTap), for: .touchUpInside)
         playButton.addTarget(self, action: #selector(playTap), for: .touchUpInside)
         nextButton.addTarget(self, action: #selector(nextTap), for: .touchUpInside)
@@ -852,30 +1281,7 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
             tabIcons.append(icon)
             tabLabels.append(label)
         }
-        lensGlass.isUserInteractionEnabled = false
-        lensGlass.clipsToBounds = true
-        lensGlass.layer.cornerCurve = .continuous
-        lensGlass.alpha = 0
-        // completely clear (nothing blurred): glass made of light — a bright rim, a highlight across the top, a soft inner glow;
-        // the tab under it grows, like it's seen through a lens
-        lensGlass.effect = nil
-        lensGlass.backgroundColor = UIColor.white.withAlphaComponent(0.04)
-        lensGlass.layer.borderWidth = 1
-        lensGlass.layer.borderColor = UIColor.white.withAlphaComponent(0.55).cgColor
-        lensGlass.layer.shadowColor = UIColor.black.cgColor
-        lensGlass.layer.shadowOpacity = 0.18
-        lensGlass.layer.shadowRadius = 10
-        lensGlass.layer.shadowOffset = CGSize(width: 0, height: 4)
-        lensShine.colors = [UIColor.white.withAlphaComponent(0.38).cgColor, UIColor.white.withAlphaComponent(0.0).cgColor]
-        lensShine.startPoint = CGPoint(x: 0.5, y: 0)
-        lensShine.endPoint = CGPoint(x: 0.5, y: 0.55)
-        lensGlass.contentView.layer.addSublayer(lensShine)
-        lensGlow.colors = [UIColor.white.withAlphaComponent(0.0).cgColor, UIColor.white.withAlphaComponent(0.16).cgColor]
-        lensGlow.type = .radial
-        lensGlow.startPoint = CGPoint(x: 0.5, y: 0.5)
-        lensGlow.endPoint = CGPoint(x: 1.05, y: 1.05)
-        lensGlass.contentView.layer.addSublayer(lensGlow)
-        root.addSubview(lensGlass)                        // above the bubble (glass nested inside glass turns milky)
+        root.addSubview(lensGlass)                        // above the bubble
         let press = UILongPressGestureRecognizer(target: self, action: #selector(tabPress(_:)))
         press.minimumPressDuration = 0
         press.allowableMovement = 10_000
@@ -918,11 +1324,16 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
             return (v.superview ?? root).convert(f, to: root)
         }
         let art = inRoot(artClip), text = inRoot(textBox), play = inRoot(playButton)
+        let prev = prevButton.alpha > 0.5 ? inRoot(prevButton) : .zero, next = nextButton.alpha > 0.5 ? inRoot(nextButton) : .zero
+        let bar = inRoot(track)
         let d: [String: Any] = [
             "x": Double(rect.minX), "y": Double(rect.minY), "w": Double(rect.width), "h": Double(rect.height),
             "ax": Double(art.minX), "ay": Double(art.minY), "aw": Double(art.width), "ah": Double(art.height),
             "tx": Double(text.minX), "ty": Double(text.minY), "tw": Double(text.width), "th": Double(text.height),
             "px": Double(play.minX), "py": Double(play.minY), "pw": Double(play.width), "ph": Double(play.height),
+            "vx": Double(prev.minX), "vy": Double(prev.minY), "vw": Double(prev.width), "vh": Double(prev.height),
+            "nx": Double(next.minX), "ny": Double(next.minY), "nw": Double(next.width), "nh": Double(next.height),
+            "bx": Double(bar.minX), "by": Double(bar.minY), "bw": Double(bar.width), "bh": Double(bar.height),
             "song": hasSong, "tucked": tucked && land,
         ]
         let key = d.keys.sorted().map { "\($0)=\(d[$0] ?? "")" }.joined(separator: ",")
@@ -959,7 +1370,7 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
         // tabs: side by side
         let n = CGFloat(max(1, tabButtons.count)), tw = (w - 8) / n
         for (i, tb) in tabButtons.enumerated() {
-            if magnified < 0 { tb.transform = .identity }
+            tb.transform = .identity
             put(tb, CGRect(x: 4 + CGFloat(i) * tw, y: 0, width: tw, height: tabsH))
             tabIcons[i].frame = CGRect(x: 0, y: 9, width: tw, height: 28)
             tabLabels[i].frame = CGRect(x: 0, y: 37, width: tw, height: 16)
@@ -980,7 +1391,7 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
         pillGlass.layer.cornerRadius = 34
         tabsRow.frame = pillGlass.bounds
         for (i, tb) in tabButtons.enumerated() {
-            if magnified < 0 { tb.transform = .identity }
+            tb.transform = .identity
             put(tb, CGRect(x: 4, y: 4 + CGFloat(i) * (btn + 2), width: 60, height: btn))
             tabIcons[i].frame = CGRect(x: 0, y: btn / 2 - 20, width: 60, height: 26)
             tabLabels[i].frame = CGRect(x: 0, y: btn / 2 + 6, width: 60, height: 13)
@@ -1037,11 +1448,18 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
         topItems.frame = CGRect(x: 0, y: 0, width: b.width, height: barH)
         let y = safe.top + 8
         var left = safe.left + 14
-        if let bb = backBtn { bb.frame = CGRect(x: left, y: y, width: 44, height: 44); left += 54 }
+        if let bb = backBtn { bb.bounds = CGRect(x: 0, y: 0, width: 44, height: 44); bb.center = CGPoint(x: left + 22, y: y + 22); left += 54 }
         var right = b.width - safe.right - 12 - (landscape ? 80 : 0)     // sideways: stay clear of the tab pill
         for v in actionViews.reversed() {
             let w = v.bounds.width
-            v.frame = CGRect(x: right - w, y: y, width: w, height: 44)
+            let isText = (v as? UIButton)?.accessibilityIdentifier?.hasPrefix("t|") == true
+            if isText && !headTextVisible {          // tucked away: fades out where it was, takes no room
+                v.alpha = 0
+                v.center = CGPoint(x: right - w / 2, y: y + 22)
+                continue
+            }
+            if isText { v.alpha = 1 }
+            v.center = CGPoint(x: right - w / 2, y: y + 22)
             right -= w + 8
         }
         topTitle.frame = CGRect(x: left + 2, y: y, width: max(0, right - left - 6), height: 44)
@@ -1066,63 +1484,141 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
         b.bounds = CGRect(x: 0, y: 0, width: ceil(max(70, size.width)), height: 44)
     }
 
-    func setHeader(title: String, back: Bool, scrolled: Bool, actions: [[String: Any]]) {
+    func setHeader(title: String, back: Bool, scrolled: Bool, actions: [[String: Any]], textVisible: Bool = true) {
+        let textChanged = textVisible != headTextVisible
+        headTextVisible = textVisible
         let key = "\(back)|" + actions.map { "\($0["symbol"] ?? "")/\($0["label"] ?? "")/\($0["text"] ?? "")/\($0["prominent"] ?? "")/\($0["on"] ?? "")" }.joined(separator: ",")
         headTitle = title
         topTitle.text = title
         let scrollChanged = scrolled != headScrolled
         headScrolled = scrolled
+        var animatedRebuild = false
         if key != headKey {
             headKey = key
             headBack = back
             headActions = actions
-            rebuildHeader()
+            animatedRebuild = !actionViews.isEmpty || backBtn != nil
+            rebuildHeader(animated: animatedRebuild)
+        }
+        if animatedRebuild { return }        // the rebuild animates the layout itself (a plain layout now would cut it short)
+        if textChanged {                      // Play / Shuffle fade in (or out) and the rest slides to make room
+            UIView.animate(withDuration: 0.45, delay: 0, usingSpringWithDamping: 0.8, initialSpringVelocity: 0.2, options: [.allowUserInteraction, .beginFromCurrentState]) {
+                self.layoutTop(self.root.bounds, self.root.safeAreaInsets)
+            }
+            return
         }
         if scrollChanged {
             UIView.animate(withDuration: 0.25, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) { self.layout(animated: false) }
         } else { layout(animated: false) }
     }
 
-    func rebuildHeader() {
-        for v in topItems.subviews { v.removeFromSuperview() }
+    /// Build the top bar's buttons. animated: the icon capsule is kept and stretches / shrinks to its new size, buttons
+    /// that go away shrink into it, new ones grow out of it, and the rest fade (going in and out of Search, for example).
+    func rebuildHeader(animated: Bool = false) {
+        let oldGroup = actionViews.first(where: { $0 is UIVisualEffectView }) as? UIVisualEffectView
+        var oldButtons: [String: UIButton] = [:]
+        if let og = oldGroup {
+            for case let b as UIButton in og.contentView.subviews { if let k = b.accessibilityIdentifier { oldButtons[k] = b } }
+        }
+        let keepBack = headBack ? backBtn : nil
+        var oldTexts: [String: UIButton] = [:]
+        for v in actionViews { if let b = v as? UIButton, let k = b.accessibilityIdentifier, k.hasPrefix("t|") { oldTexts[k] = b } }
+        var wantedTexts = Set<String>()
+        for a in headActions where (a["text"] as? Bool) ?? false {
+            wantedTexts.insert("t|\((a["symbol"] as? String) ?? "")|\((a["label"] as? String) ?? "")|\((a["prominent"] as? Bool) ?? false)")
+        }
+        var kept: [UIView] = []
+        if let kb = keepBack { kept.append(kb) }
+        for (k, b) in oldTexts where wantedTexts.contains(k) { kept.append(b) }
+        if let og = oldGroup { kept.append(og) }
+        for v in topItems.subviews where !kept.contains(where: { $0 === v }) {
+            if animated {
+                UIView.animate(withDuration: 0.22, animations: { v.alpha = 0; v.transform = CGAffineTransform(scaleX: 0.6, y: 0.6) }, completion: { _ in v.removeFromSuperview() })
+            } else { v.removeFromSuperview() }
+        }
         actionViews = []
         backBtn = nil
+        var appearing: [UIView] = []
         if headBack {
-            let b = UIButton(type: .system)
-            symbolButton(b, "chevron.backward", size: 17, glass: true)
-            b.addTarget(self, action: #selector(backTap), for: .touchUpInside)
-            topItems.addSubview(b)
-            backBtn = b
+            if let kb = keepBack { backBtn = kb }
+            else {
+                let b = UIButton(type: .system)
+                symbolButton(b, "chevron.backward", size: 17, glass: true)
+                b.addTarget(self, action: #selector(backTap), for: .touchUpInside)
+                b.bounds = CGRect(x: 0, y: 0, width: 44, height: 44)
+                topItems.addSubview(b)
+                backBtn = b
+                appearing.append(b)
+            }
         }
         var group: [UIButton] = []
+        var usedOld = false
+        var groupMoves: [(UIButton, CGRect)] = []
         func flush() {                                   // icon buttons side by side share one glass capsule, like iOS 26
             guard !group.isEmpty else { return }
-            let g = GlassChrome.glass()
-            g.effect = glassEffect(interactive: true)
+            let g: UIVisualEffectView
+            let reused: Bool
+            if let og = oldGroup, !usedOld { g = og; usedOld = true; reused = true }
+            else { g = GlassChrome.glass(); g.effect = glassEffect(interactive: true); g.layer.cornerRadius = 22; reused = false }
+            let keep = Set(group.map { ObjectIdentifier($0) })
+            for case let old as UIButton in g.contentView.subviews where !keep.contains(ObjectIdentifier(old)) {
+                if animated {                             // shrinks away into the capsule
+                    UIView.animate(withDuration: 0.25, animations: { old.alpha = 0; old.transform = CGAffineTransform(scaleX: 0.3, y: 0.3) }, completion: { _ in old.removeFromSuperview() })
+                } else { old.removeFromSuperview() }
+            }
             var x: CGFloat = 4
             for btn in group {
-                btn.frame = CGRect(x: x, y: 0, width: 40, height: 44)
-                g.contentView.addSubview(btn)
+                let target = CGRect(x: x, y: 0, width: 40, height: 44)
+                if btn.superview !== g.contentView {
+                    g.contentView.addSubview(btn)
+                    btn.transform = .identity
+                    btn.frame = target
+                    if animated && reused { btn.alpha = 0; btn.transform = CGAffineTransform(scaleX: 0.3, y: 0.3) }   // grows out of it
+                }
+                groupMoves.append((btn, target))
                 x += 40
             }
-            g.bounds = CGRect(x: 0, y: 0, width: x + 4, height: 44)
-            g.layer.cornerRadius = 22
-            topItems.addSubview(g)
+            let width = x + 4
+            if !reused {
+                g.bounds = CGRect(x: 0, y: 0, width: width, height: 44)
+                if animated { appearing.append(g) }
+            } else {
+                g.tag = Int(width)                        // the new width; applied in the animation below
+            }
+            if group.count > 1 && (g.gestureRecognizers ?? []).isEmpty {   // hold and slide: a glass lens picks between them
+                let lp = UILongPressGestureRecognizer(target: self, action: #selector(pillPress(_:)))
+                lp.minimumPressDuration = 0.22
+                g.addGestureRecognizer(lp)
+            }
+            if g.superview !== topItems { topItems.addSubview(g) }
             actionViews.append(g)
             group = []
         }
         for (i, a) in headActions.enumerated() {
             let sym = (a["symbol"] as? String) ?? "circle", label = (a["label"] as? String) ?? ""
             let isText = (a["text"] as? Bool) ?? false, prominent = (a["prominent"] as? Bool) ?? false, on = (a["on"] as? Bool) ?? false
-            let b = UIButton(type: .system)
-            b.tag = i
-            b.addTarget(self, action: #selector(headTap(_:)), for: .touchUpInside)
             if isText {
                 flush()
-                textButton(b, sym, label, prominent)
-                topItems.addSubview(b)
-                actionViews.append(b)
+                let key = "t|\(sym)|\(label)|\(prominent)"
+                if let b = oldTexts[key], kept.contains(where: { $0 === b }) {
+                    b.tag = i
+                    actionViews.append(b)
+                } else {
+                    let b = UIButton(type: .system)
+                    b.tag = i
+                    b.accessibilityIdentifier = key
+                    b.addTarget(self, action: #selector(headTap(_:)), for: .touchUpInside)
+                    textButton(b, sym, label, prominent)
+                    topItems.addSubview(b)
+                    actionViews.append(b)
+                    appearing.append(b)
+                }
             } else {
+                let b = oldButtons.removeValue(forKey: sym) ?? UIButton(type: .system)
+                b.removeTarget(nil, action: nil, for: .allEvents)
+                b.tag = i
+                b.accessibilityIdentifier = sym
+                b.addTarget(self, action: #selector(headTap(_:)), for: .touchUpInside)
                 var c = UIButton.Configuration.plain()
                 c.image = UIImage(systemName: sym, withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold))
                 c.baseForegroundColor = on ? tint : .white
@@ -1131,10 +1627,87 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
             }
         }
         flush()
+        if oldGroup != nil && !usedOld, let og = oldGroup {      // no capsule on the new page: shrink the old one away
+            if animated {
+                UIView.animate(withDuration: 0.25, animations: { og.alpha = 0; og.transform = CGAffineTransform(scaleX: 0.4, y: 0.4) }, completion: { _ in og.removeFromSuperview() })
+            } else { og.removeFromSuperview() }
+        }
+        guard animated else {
+            for (btn, target) in groupMoves { btn.alpha = 1; btn.transform = .identity; btn.frame = target }
+            for v in actionViews where v.tag > 0 && v is UIVisualEffectView { v.bounds = CGRect(x: 0, y: 0, width: CGFloat(v.tag), height: 44); v.tag = 0 }
+            return
+        }
+        let before = kept.map { ($0, $0.center) }
+        UIView.performWithoutAnimation {
+            self.layoutTop(self.root.bounds, self.root.safeAreaInsets)      // everything at its new place…
+            for (v, c) in before { v.center = c }                            // …except what's kept, which glides there
+        }
+        for v in appearing { v.alpha = 0; v.transform = CGAffineTransform(scaleX: 0.6, y: 0.6) }
+        UIView.animate(withDuration: 0.55, delay: 0, usingSpringWithDamping: 0.72, initialSpringVelocity: 0.3, options: [.allowUserInteraction, .beginFromCurrentState], animations: {
+            for v in self.actionViews where v.tag > 0 && v is UIVisualEffectView {
+                v.bounds = CGRect(x: 0, y: 0, width: CGFloat(v.tag), height: 44)    // the capsule stretches / shrinks
+                v.tag = 0
+            }
+            for (btn, target) in groupMoves { btn.transform = .identity; btn.frame = target; btn.alpha = 1 }
+            for v in appearing { v.alpha = 1; v.transform = .identity }
+            self.layoutTop(self.root.bounds, self.root.safeAreaInsets)               // and slides to its new place
+        })
     }
 
-    @objc func backTap() { plugin?.send("back") }
-    @objc func headTap(_ b: UIButton) { plugin?.send("headAction", ["id": b.tag]) }
+    @objc func backTap() { Haptics.tap(); plugin?.send("back") }
+
+    /// Hold the top-bar pill: a glass lens appears over the button under your finger and follows it; let go to pick.
+    @objc func pillPress(_ g: UILongPressGestureRecognizer) {
+        guard let group = g.view as? UIVisualEffectView else { return }
+        let content = group.contentView
+        let buttons = content.subviews.compactMap { $0 as? UIButton }.sorted { $0.frame.minX < $1.frame.minX }
+        guard !buttons.isEmpty else { return }
+        let p = g.location(in: content)
+        func nearest() -> Int {
+            var best = 0, bestD = CGFloat.greatestFiniteMagnitude
+            for (i, b) in buttons.enumerated() { let d = abs(b.frame.midX - p.x); if d < bestD { bestD = d; best = i } }
+            return best
+        }
+        let i = nearest()
+        let size: CGFloat = 40
+        let cx = min(max(p.x, buttons.first!.frame.midX), buttons.last!.frame.midX)
+        let centerInRoot = content.convert(CGPoint(x: cx, y: content.bounds.midY), to: root)
+        switch g.state {
+        case .began:
+            pillPick = i
+            Haptics.tick()
+            root.bringSubviewToFront(pillLens)
+            pillLens.transform = .identity
+            pillLens.bounds = CGRect(x: 0, y: 0, width: size, height: size)
+            pillLens.center = content.convert(CGPoint(x: buttons[i].frame.midX, y: content.bounds.midY), to: root)
+            pillLens.begin(source: content)
+            UIView.animate(withDuration: 0.35, delay: 0, usingSpringWithDamping: 0.7, initialSpringVelocity: 0.5, options: [.allowUserInteraction, .beginFromCurrentState]) {
+                self.pillLens.alpha = 1
+                self.pillLens.center = centerInRoot
+                self.pillLens.transform = CGAffineTransform(scaleX: 1.25, y: 1.25)
+                self.pillLens.layoutIfNeeded()
+                self.pillLens.updateMirror()
+            }
+        case .changed:
+            if i != pillPick { pillPick = i; Haptics.tick() }
+            pillLens.center = centerInRoot
+            pillLens.updateMirror()
+        case .ended:
+            let b = buttons[i]
+            let land = content.convert(CGPoint(x: b.frame.midX, y: content.bounds.midY), to: root)
+            UIView.animate(withDuration: 0.4, delay: 0, usingSpringWithDamping: 0.7, initialSpringVelocity: 0.4, options: [.allowUserInteraction, .beginFromCurrentState], animations: {
+                self.pillLens.center = land
+                self.pillLens.transform = .identity
+                self.pillLens.layoutIfNeeded()
+                self.pillLens.updateMirror()
+            })
+            UIView.animate(withDuration: 0.25, delay: 0.15, options: [.allowUserInteraction, .beginFromCurrentState], animations: { self.pillLens.alpha = 0 })
+            headTap(b)
+        default:
+            UIView.animate(withDuration: 0.2) { self.pillLens.alpha = 0; self.pillLens.transform = .identity }
+        }
+    }
+    @objc func headTap(_ b: UIButton) { Haptics.tap(); plugin?.send("headAction", ["id": b.tag]) }
 
     func tabFrame(_ id: String) -> CGRect? {
         guard let i = tabs.firstIndex(where: { $0["id"] == id }), i < tabButtons.count else { return nil }
@@ -1187,9 +1760,13 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
             covered = v
             UIView.animate(withDuration: 0.2, delay: 0, options: [.beginFromCurrentState]) { self.layout(animated: false) }
         }
-        if let v = s["visible"] as? Bool, v != visible {
-            visible = v
-            if v { showChrome(bounce: (s["bounce"] as? Bool) ?? false) } else { hideChrome() }
+        if let v = s["visible"] as? Bool {
+            if v != visible {
+                visible = v
+                if v { showChrome(bounce: (s["bounce"] as? Bool) ?? false) } else { hideChrome() }
+            } else if v && ((s["bounce"] as? Bool) ?? false) {
+                showChrome(bounce: true)                 // already faded back in by the shrink: just the landing bounce
+            }
         }
         if retab { retint(); placeLens(animated: true) }
         if relayout { layout(animated: true) }
@@ -1197,7 +1774,18 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
 
     var chromeViews: [UIView] { landscape ? [pillGlass, miniGlass] : [dockGlass] }
 
+    /// fade everything that floats over the app (the player's grow / shrink drives this frame by frame)
+    func fade(_ a: CGFloat) {
+        if a > 0.001 && !visible {                 // coming back: make sure it's laid out and visible underneath the fade
+            visible = true
+            for v in chromeViews { v.transform = .identity }
+            layout(animated: false)
+        }
+        UIView.performWithoutAnimation { root.alpha = a }
+    }
+
     func hideChrome() {
+        if root.alpha < 1 { return }               // already faded out by the grow animation
         UIView.animate(withDuration: 0.16, delay: 0, options: [.beginFromCurrentState]) {
             for v in self.chromeViews { v.alpha = 0; v.transform = CGAffineTransform(scaleX: 0.96, y: 0.96) }
             for v in [self.topGlass, self.topTitle, self.topItems] as [UIView] { v.alpha = 0 }
@@ -1205,6 +1793,7 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
     }
 
     func showChrome(bounce: Bool) {
+        UIView.performWithoutAnimation { root.alpha = 1 }
         layout(animated: false)
         for v in chromeViews { v.transform = bounce ? CGAffineTransform(scaleX: 0.93, y: 0.93) : .identity }
         UIView.animate(withDuration: 0.5, delay: 0, usingSpringWithDamping: 0.55, initialSpringVelocity: 0.6, options: [.allowUserInteraction, .beginFromCurrentState]) {
@@ -1232,10 +1821,10 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
     }
 
     // ---------------------------------------------------------------- gestures
-    @objc func prevTap() { plugin?.send("prev") }
-    @objc func playTap() { plugin?.send("toggle") }
-    @objc func nextTap() { plugin?.send("next") }
-    @objc func miniTap() { plugin?.send("open") }
+    @objc func prevTap() { Haptics.tap(); plugin?.send("prev") }
+    @objc func playTap() { Haptics.press(); plugin?.send("toggle") }
+    @objc func nextTap() { Haptics.tap(); plugin?.send("next") }
+    @objc func miniTap() { Haptics.soft(); plugin?.send("open") }
 
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         if touch.view is UIButton || touch.view?.superview is UIButton { return false }
@@ -1252,7 +1841,7 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
             lastPanY = t.y; lastPanT = CACurrentMediaTime(); panV = 0
         case .changed:
             if panMode == 0 && (abs(t.x) > 8 || abs(t.y) > 8) {
-                if t.y < -8 && abs(t.y) > abs(t.x) * 1.2 && hasSong { panMode = 2; plugin?.send("dragStart") }
+                if t.y < -8 && abs(t.y) > abs(t.x) * 1.2 && hasSong { panMode = 2; Haptics.soft(); plugin?.send("dragStart") }
                 else if abs(t.x) > abs(t.y) { panMode = 1 }
             }
             if panMode == 2 {
@@ -1270,6 +1859,7 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
             } else if panMode == 1 {
                 let commit = g.state == .ended && abs(t.x) > 60
                 let dir: CGFloat = t.x < 0 ? 1 : -1
+                if commit { Haptics.tap() }
                 if commit && !tucked {
                     let w = miniRow.bounds.width
                     UIView.animate(withDuration: 0.17, delay: 0, options: [.curveEaseIn], animations: {
@@ -1297,26 +1887,6 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
         }
     }
 
-    func sizeLensLayers() {
-        CATransaction.begin(); CATransaction.setDisableActions(true)
-        lensShine.frame = lensGlass.bounds
-        lensShine.cornerRadius = lensGlass.layer.cornerRadius
-        lensGlow.frame = lensGlass.bounds
-        lensGlow.cornerRadius = lensGlass.layer.cornerRadius
-        CATransaction.commit()
-    }
-
-    /// The tab under the glass bubble grows a little, like it's seen through a lens.
-    func magnify(_ i: Int) {
-        guard i != magnified else { return }
-        magnified = i
-        UIView.animate(withDuration: 0.3, delay: 0, usingSpringWithDamping: 0.7, initialSpringVelocity: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
-            for (j, b) in self.tabButtons.enumerated() {
-                b.transform = j == i ? CGAffineTransform(scaleX: 1.16, y: 1.16) : .identity
-            }
-        }
-    }
-
     /// Touch the tabs: the bubble jumps to your finger, follows it, and the tab under it opens when you let go.
     @objc func tabPress(_ g: UILongPressGestureRecognizer) {
         let p = g.location(in: tabsRow)
@@ -1339,16 +1909,16 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
             else { c.x = min(max(p.x, tabButtons.first!.frame.midX), tabButtons.last!.frame.midX) }
             if g.state == .began { haptic.prepare() }
             if (lens.tag != i) { lens.tag = i; haptic.selectionChanged() }
-            if g.state == .began {                     // the glass bubble appears where the highlight is, then follows the finger
+            if g.state == .began {                     // the glass lens appears where the highlight is, then follows the finger
+                lens.backgroundColor = .clear              // (so the magnified picture doesn't include the resting highlight)
+                lens.layer.borderColor = UIColor.clear.cgColor
                 root.bringSubviewToFront(lensGlass)
                 lensGlass.transform = .identity
                 lensGlass.bounds = lens.bounds
                 lensGlass.center = tabsRow.convert(lens.center, to: root)
-                lensGlass.layer.cornerRadius = lens.layer.cornerRadius
+                lensGlass.begin(source: tabsRow)
             }
             let cRoot = tabsRow.convert(c, to: root)
-            magnify(i)
-            defer { sizeLensLayers() }
             UIView.animate(withDuration: g.state == .began ? 0.35 : 0.12, delay: 0, usingSpringWithDamping: 0.75, initialSpringVelocity: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
                 self.lens.bounds = CGRect(origin: .zero, size: f.size)
                 self.lens.center = c
@@ -1358,9 +1928,10 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
                 self.lens.layer.borderColor = UIColor.clear.cgColor
                 self.lensGlass.bounds = CGRect(origin: .zero, size: f.size)
                 self.lensGlass.center = cRoot
-                self.lensGlass.layer.cornerRadius = min(f.width, f.height) / 2
                 self.lensGlass.transform = CGAffineTransform(scaleX: 1.22, y: 1.22)   // lifted, a bit bigger than the tab
                 self.lensGlass.alpha = 1
+                self.lensGlass.layoutIfNeeded()
+                self.lensGlass.updateMirror()
             }
         case .ended:
             let i = nearest()
@@ -1385,14 +1956,14 @@ final class GlassChrome: NSObject, UIGestureRecognizerDelegate {
 
     /// Let go: the glass bubble drops into the chosen tab, shrinks and melts into the resting highlight.
     func settleGlass(on i: Int) {
-        magnify(-1)
         guard i < tabButtons.count else { return }
         let f = lensFrame(for: restFrame(tabButtons[i]))
         UIView.animate(withDuration: 0.45, delay: 0, usingSpringWithDamping: 0.7, initialSpringVelocity: 0.4, options: [.allowUserInteraction, .beginFromCurrentState], animations: {
             self.lensGlass.bounds = CGRect(origin: .zero, size: f.size)
             self.lensGlass.center = self.tabsRow.convert(CGPoint(x: f.midX, y: f.midY), to: self.root)
-            self.lensGlass.layer.cornerRadius = min(f.width, f.height) / 2
             self.lensGlass.transform = .identity
+            self.lensGlass.layoutIfNeeded()
+            self.lensGlass.updateMirror()
         })
         UIView.animate(withDuration: 0.3, delay: 0.12, options: [.allowUserInteraction, .beginFromCurrentState], animations: {
             self.lensGlass.alpha = 0

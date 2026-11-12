@@ -1,7 +1,8 @@
 import { idb } from "./store.js";
+import { COLOR_VERSION } from "./tags.js";
 import { readTags, squareJpeg, coverColor, organizedPath, extOf, isAudio, safeName, primaryArtist, probeDuration } from "./tags.js";
 import { buildZip, readZip } from "./zip.js";
-import { putSongFile, songBlob, delSongFile, songURL } from "./files.js";
+import { putSongFile, songBlob, delSongFile, songURL, libraryFileURL, dropPicked } from "./files.js";
 import { diag, timed } from "./diag.js";
 
 export const PACK_FORMAT = "auraos-musicpack";
@@ -39,10 +40,26 @@ class Library extends EventTarget {
   async loadCover(id) {
     const c = await idb.get("covers", id);
     if (!c) return null;
-    const v = { url: URL.createObjectURL(c.big), small: URL.createObjectURL(c.small), color: c.color, big: c.big, smallBlob: c.small };
+    const v = { url: URL.createObjectURL(c.big), small: URL.createObjectURL(c.small), color: c.color, big: c.big, smallBlob: c.small, cv: c.cv || 1 };
     this.covers.set(id, v);
     return v;
   }
+
+  /** Covers whose colour was worked out the old way: work it out again from the small cover (in the background, once). */
+  async refreshColors(onEach) {
+    for (const [id, v] of [...this.covers]) {
+      if (v.cv >= COLOR_VERSION) continue;
+      const color = await coverColor(v.smallBlob || v.big);
+      if (!color) continue;
+      v.color = color; v.cv = COLOR_VERSION;
+      const c = await idb.get("covers", id);
+      if (c) await idb.put("covers", { ...c, color, cv: COLOR_VERSION }, id);
+      onEach?.(id);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+
+
 
   saveMeta() {
     clearTimeout(this._mt);
@@ -98,7 +115,7 @@ class Library extends EventTarget {
     if (!big) return null;
     const small = await squareJpeg(big, 160);
     const color = await coverColor(small || big);
-    await idb.put("covers", { big, small, color }, id);
+    await idb.put("covers", { big, small, color, cv: COLOR_VERSION }, id);
     await this.loadCover(id);
     return id;
   }
@@ -136,6 +153,22 @@ class Library extends EventTarget {
     diag.step = `Cover · ${name}`;
     song.cover = await timed(this.storeCover(tags, picture || folderCover), 30000, `Saving the cover of ${name}`);
     song.store = await putSongFile(blob.type ? blob : new Blob([blob], { type }), file, source || blob.source);
+    await idb.put("songs", song);
+    this.songs.set(song.id, song);
+    return { song, skipped: false };
+  }
+
+  /** Add a file already downloaded into Library/<rel> (YouTube links), with known info and cover. Returns {song, skipped}. */
+  async addLocalFile(rel, size, ext, tags, picture) {
+    const dup = this.existing(tags);
+    if (dup) { await dropPicked(rel); return { song: dup, skipped: true }; }
+    const file = this.uniqueFile(organizedPath(tags, ext));
+    const type = mimeFor(ext);
+    const song = { id: uid(), file, ...tags, size, added: Date.now(), type };
+    diag.step = `Cover · ${tags.title}`;
+    song.cover = await timed(this.storeCover(tags, picture), 30000, `Saving the cover of ${tags.title}`);
+    try { song.store = await putSongFile({ size, type }, file, { path: await libraryFileURL(rel), offset: 0, length: -1 }); }
+    finally { await dropPicked(rel); }
     await idb.put("songs", song);
     this.songs.set(song.id, song);
     return { song, skipped: false };

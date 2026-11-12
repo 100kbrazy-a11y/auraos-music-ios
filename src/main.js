@@ -8,7 +8,7 @@ import { persistStorage, usage } from "./store.js";
 import { squareJpeg, coverColor } from "./tags.js";
 import { idb } from "./store.js";
 import { diag } from "./diag.js";
-import { DiskFile, dropPicked } from "./files.js";
+import { DiskFile, dropPicked, initLibraryURL, songFileURLNow } from "./files.js";
 import { nc, symbolFor } from "./native-chrome.js";
 import { search as searchOnline, details as resultDetails, bestSongMatch, bestAlbumMatch, same } from "./lookup.js";
 
@@ -93,7 +93,7 @@ function press(el, tap, long) {
     if (e.button > 0) return;
     sx = e.clientX; sy = e.clientY; fired = false;
     el.classList.add("pressed");
-    if (long) timer = setTimeout(() => { fired = true; el.classList.remove("pressed"); navigator.vibrate?.(18); long(e); }, 460);
+    if (long) timer = setTimeout(() => { fired = true; el.classList.remove("pressed"); navigator.vibrate?.(18); nc.haptic("press"); long(e); }, 460);
   });
   const cancel = () => { clearTimeout(timer); el.classList.remove("pressed"); };
   el.addEventListener("pointermove", (e) => { if (Math.hypot(e.clientX - sx, e.clientY - sy) > 10) cancel(); });
@@ -125,6 +125,7 @@ function openSheet(content, { dialog = false, onClose } = {}) {
   sh.append(content);
   sh.hidden = scrim.hidden = false;
   nc.update({ covered: true });            // the native bubble / top bar step aside while a sheet is open
+  npPlayButton();
   sheetClose = onClose || null;
   scrim.onclick = () => closeSheet();
 }
@@ -132,7 +133,7 @@ function closeSheet(silent) {
   const sh = $("#sheet");
   if (sh.hidden) return false;
   sh.hidden = $("#scrim").hidden = true;
-  queueMicrotask(() => { if ($("#sheet").hidden) nc.update({ covered: !!sel }); });   // (not when another sheet opens straight away)
+  queueMicrotask(() => { if ($("#sheet").hidden) { nc.update({ covered: !!sel }); npPlayButton(); } });   // (not when another sheet opens straight away)
   sh.innerHTML = "";
   const f = sheetClose; sheetClose = null;
   if (!silent) f?.();
@@ -209,7 +210,6 @@ function showDiagnostics() {
 const TABS = [
   { id: "albums", label: "Albums", icon: "album" }, { id: "artists", label: "Artists", icon: "artist" },
   { id: "songs", label: "Songs", icon: "note" }, { id: "playlists", label: "Playlists", icon: "playlist" },
-  { id: "browse", label: "Browse", icon: "browse" },
 ];
 let stack = [{ type: "albums" }];
 let pageEl = null;
@@ -483,6 +483,7 @@ function setupSwipe() {
     if (to && Math.abs(dx) > 70) {
       el.style.opacity = "";
       el.style.transition = "";
+      nc.haptic("tick");
       if (to === "back") pop(); else goTab(to);
     } else {
       el.style.transition = "transform .3s cubic-bezier(.34,1.4,.64,1), opacity .3s";
@@ -530,7 +531,7 @@ function pageShell(title, { back = stack.length > 1, actions = [] } = {}) {
   page.addEventListener("scroll", () => {
     const was = page.classList.contains("scrolled");
     page.classList.toggle("scrolled", page.scrollTop > 8);
-    if (nc.on && was !== page.scrollTop > 8 && page === pageEl) nc.header(page, page.scrollTop > 8);
+    if (nc.on && page === pageEl && (was !== page.scrollTop > 8 || page.querySelector(".bplay"))) nc.header(page, page.scrollTop > 8);   // (sends only when something changed)
     if (Math.abs(page.scrollTop - lastTop) > 4 && performance.now() > quietScrollUntil) miniTuck.scrolled();
     lastTop = page.scrollTop;
   }, { passive: true });
@@ -662,7 +663,7 @@ function playButtons(songs, ctx, mix) {
   };
 }
 
-const rootActions = (withFilter = true) => [ib("search", () => { goTab("browse"); setTimeout(() => $(".browse-q")?.focus(), 420); }, "", "Search"),
+const rootActions = (withFilter = true) => [ib("search", () => { push({ type: "browse" }); setTimeout(() => $(".browse-q")?.focus(), 420); }, "", "Search"),
   withFilter && filterButton(), ib("settings", () => push({ type: "settings" }), "", "Settings")].filter(Boolean);
 
 function render(p) {
@@ -751,6 +752,20 @@ function songList(songs, opts) {
   const box = h("div", { class: "list" });
   songs.forEach((s, i) => box.append(songRow(s, i, songs, opts)));
   return box;
+}
+/** an artist as a card the size of an album card (round picture) */
+function artistCard(a) {
+  const c = h("div", { class: "card artist-card" }, art(a.cover, { small: false, label: a.name, round: true }),
+    h("div", { class: "t" }, a.name), h("div", { class: "s" }, plural(a.songs.size, "song")));
+  press(c, () => push({ type: "artist", name: a.name }));
+  return c;
+}
+/** a song as a card the size of an album card; tapping plays it (with a mix of similar songs after it) */
+function songCard(s, list, i, ctx) {
+  const c = h("div", { class: "card song-card" + (player.current?.id === s.id ? " now" : "") }, art(s.cover, { small: false, label: s.album }),
+    h("div", { class: "t" }, s.title), h("div", { class: "s" }, s.artist || s.album || ""));
+  press(c, () => playWithMix(list, i, ctx), () => songMenu(s));
+  return c;
 }
 function albumCard(a) {
   const selected = sel?.kind === "albums" && sel.ids.has(a.key);
@@ -964,6 +979,7 @@ function settingsModel(sizeText) {
     { title: "Your Music", rows: [
       { id: "add", type: "action", symbol: "plus", title: "Add Songs", subtitle: "Pick music files from your phone" },
       { id: "pack", type: "action", symbol: "shippingbox", title: "Add Music Pack", subtitle: "Add a …-musicpack.zip someone shared with you" },
+      { id: "link", type: "action", symbol: "link", title: "Add from Link (Experimental)", subtitle: "Paste a YouTube or YouTube Music song, album or playlist link" },
       { id: "covers", type: "action", symbol: "globe", title: "Find Missing Covers", subtitle: "Look up album art online" },
       { id: "genres", type: "action", symbol: "magnifyingglass", title: "Find Genres", subtitle: missingGenres ? `Look up genres online for ${plural(missingGenres, "song")} that don't have one` : "Every song has a genre" },
       { id: "autofill", type: "toggle", symbol: "wand.and.stars", title: "Fill In Song Info Automatically", subtitle: "When you add songs, look up missing albums, years, genres and covers", value: s.autofill !== false },
@@ -1005,6 +1021,7 @@ function applySetting(id, v) {
 async function settingAction(id) {
   if (id === "add") pickSongs();
   else if (id === "pack") pickPacks();
+  else if (id === "link") addFromLink();
   else if (id === "covers") findCovers(true);
   else if (id === "genres") findGenres();
   else if (id === "diag") showDiagnostics();
@@ -1027,6 +1044,7 @@ function pageSettings() {
   const libGroup = h("div", { class: "group" }, h("h4", {}, "Your Music"),
     item("add", "Add Songs", "Pick music files from your phone", pickSongs),
     item("pack", "Add Music Pack", "Add a …-musicpack.zip someone shared with you", pickPacks),
+    item("globe", "Add from Link (Experimental)", "Paste a YouTube or YouTube Music song, album or playlist link", addFromLink),
     item("globe", "Find Missing Covers", "Look up album art online", () => findCovers(true)),
     item("search", "Find Genres", (() => { const n = [...lib.songs.values()].filter((x) => !genresOf(x).length).length; return n ? `Look up genres online for ${plural(n, "song")} that don't have one` : "Every song has a genre"; })(), () => findGenres()));
   const sizeLine = h("div", { class: "s" }, "…");
@@ -1195,7 +1213,7 @@ async function setAlbumCover(a, blob) {
   const small = await squareJpeg(big, 160);
   const color = await coverColor(small);
   const id = "c" + Date.now().toString(36);
-  await idb.put("covers", { big, small, color }, id);
+  await idb.put("covers", { big, small, color, cv: 2 }, id);
   await lib.loadCover(id);
   for (const s of a.tracks) await lib.updateSong(s.id, { cover: id });
   lib.rebuild();
@@ -1465,6 +1483,64 @@ async function importPacks(files) {
   refresh();
   findCovers(false);
 }
+// ---- iPhone: when you leave the app or lock the phone, the music carries on in the phone's own player
+// (the web view can't keep playing in the background). Everything it needs is ready ahead of time, because once the
+// app is on its way out there may be no time to prepare anything.
+function setupBackgroundPlayback() {
+  const arts = {};                                   // cover id → small JPEG (base64), for the lock screen
+  let bgActive = false, win = 0;
+  const toB64 = (blob) => new Promise((res) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1] || ""); r.onerror = () => res(""); r.readAsDataURL(blob); });
+  const fillArts = async () => {                     // covers for the songs around the current one
+    const ids = [];
+    for (let i = Math.max(0, player.index - 5); i < Math.min(player.queue.length, player.index + 60); i++) {
+      const c = lib.songs.get(player.queue[i])?.cover;
+      if (c && !arts[c] && !ids.includes(c)) ids.push(c);
+    }
+    for (const id of ids.slice(0, 40)) { const cv = lib.cover(id); if (cv?.smallBlob) arts[id] = await toB64(cv.smallBlob); }
+  };
+  for (const ev of ["track", "state"]) player.addEventListener(ev, () => setTimeout(fillArts, 300));
+  const payload = () => {
+    win = Math.max(0, player.index - 50);
+    const ids = player.queue.slice(win, player.index + 800);
+    const items = ids.map((id) => { const s = lib.songs.get(id); return s ? { path: songFileURLNow(s), title: s.title || "", artist: s.artist || "", album: s.album || "", duration: s.duration || 0, art: s.cover || "" } : { path: "" }; });
+    const used = {};
+    for (const it of items) if (it.art && arts[it.art]) used[it.art] = arts[it.art];
+    return { items, index: player.index - win, position: player.audio.currentTime || 0, repeat: player.repeat, arts: used };
+  };
+  const quietWeb = () => {                           // so the lock screen talks to the native player only
+    try { navigator.mediaSession.metadata = null; for (const a of ["play", "pause", "nexttrack", "previoustrack", "seekto", "stop", "seekforward", "seekbackward"]) navigator.mediaSession.setActionHandler(a, null); } catch {}
+  };
+  const leave = () => {
+    if (bgActive || !player.playing || !player.current) return;
+    const o = payload();
+    if (!o.items[o.index]?.path) return;             // (a song from before songs were stored as files)
+    player.pause();
+    player.bgActive = true;
+    quietWeb();
+    bgActive = true;
+    nc.bgStart(o).then((ok) => { diag.log(`background: native player ${ok ? "took over" : "couldn't start"}`); if (!ok) { bgActive = false; player.bgActive = false; player.setupSession(); player.updateSession(true); player.play(); } });
+  };
+  const back = async () => {
+    if (!bgActive) return;
+    bgActive = false;
+    const st = await nc.bgStop();
+    player.bgActive = false;
+    player.setupSession();
+    if (!st?.active) return;
+    const i = win + (st.index | 0);
+    diag.log(`background: back in the app at song ${i + 1}, ${Math.round(st.position)} s, ${st.playing ? "playing" : "paused"}`);
+    const resume = () => { player.seek(st.position || 0); if (st.playing) player.play(); player.updateSession(true); };
+    if (i !== player.index && i >= 0 && i < player.queue.length) {
+      player.index = i;
+      player.emit("willtrack", { dir: 1 });
+      await player.load(1, false);
+      if (player.audio.readyState >= 1) resume(); else player.audio.addEventListener("loadedmetadata", resume, { once: true });
+    } else resume();
+  };
+  document.addEventListener("visibilitychange", () => (document.hidden ? leave() : back()));
+  addEventListener("pagehide", leave);
+}
+
 /** "Add Music Pack": on iPhone, Apple's Files browser, and the pack is read from disk piece by piece. */
 async function pickPacks() {
   if (!nc.on) return $("#pickPack").click();
@@ -1492,6 +1568,36 @@ async function importAudio(files) {
   refresh();
 }
 
+// ---- EXPERIMENTAL: add a song / album / playlist from a YouTube or YouTube Music link (see youtube.js)
+let linkBusy = false;
+async function addFromLink() {
+  if (linkBusy) return snack("Already adding from a link…");
+  const text = await prompt("Add from Link", "Paste a YouTube or YouTube Music link to a song, album or playlist. Experimental: YouTube sometimes blocks this.", "", "", "Add");
+  if (!text) return;
+  const yt = await import("./youtube.js");
+  if (!yt.parseLink(text)) { snack("That isn't a YouTube or YouTube Music link"); return; }
+  linkBusy = true;
+  const pb = progressBox("Adding from YouTube");
+  try {
+    const r = await yt.importLink(text, lib, (f, t) => pb.set(f, t));
+    pb.close();
+    setTimeout(() => autoFill(r.songs || []), 4600);
+    if (!r.added && !r.skipped) { snack(`Couldn't add from that link${r.firstError ? ": " + r.firstError : ""}`, "Details", showDiagnostics, 12000); return; }
+    let msg = `Added ${plural(r.added, "song")}`;
+    if (r.skipped) msg += ` · ${r.skipped} already in your library`;
+    if (r.failed) msg += ` · ${r.failed} couldn't be downloaded (${r.firstError})`;
+    if (r.playlist) msg += ` and the playlist “${r.playlist}”`;
+    snack(msg, r.playlist ? "Open" : null, () => push({ type: "playlist", name: r.playlist }), 8000);
+  } catch (e) {
+    pb.close();
+    diag.log("YouTube: " + (e.message || e));
+    snack("Couldn't add from that link: " + (e.message || e), "Details", showDiagnostics, 12000);
+  } finally {
+    linkBusy = false;
+    refresh();
+  }
+}
+
 // ============================================================ browse: search your library, with recent searches
 const browse = { q: "" };
 const recents = () => (lib.meta.recent ||= []);
@@ -1505,7 +1611,7 @@ function addRecent(q) {
 }
 
 function pageBrowse() {
-  const p = pageShell("Browse", { back: false, actions: [ib("settings", () => push({ type: "settings" }), "", "Settings")] });
+  const p = pageShell("Search", { actions: [ib("settings", () => push({ type: "settings" }), "", "Settings")] });
   const input = h("input", { class: "browse-q", placeholder: "Songs, albums, artists, genres", value: browse.q, enterkeyhint: "search" });
   const clearBtn = ib("close", () => { input.value = ""; run(); input.focus(); }, "clear-q", "Clear");
   const results = h("div");
@@ -1547,16 +1653,10 @@ function browseResults(q, useRecent) {
   const albums = lib.albums.filter((a) => m(a.title) || m(a.artist));
   const artists = lib.artists().filter((a) => m(a.name));
   const all = !q;
-  if (artists.length) {
-    out.push(h("div", { class: "section-t" }, all ? `Artists · ${artists.length}` : "Artists"));
-    for (const a of all ? artists : artists.slice(0, 6)) {
-      const r = h("div", { class: "arow" }, art(a.cover, { label: a.name, round: true }), h("div", {}, h("div", { class: "t" }, a.name), h("div", { class: "s" }, plural(a.songs.size, "song"))));
-      press(r, () => push({ type: "artist", name: a.name }));
-      out.push(r);
-    }
-  }
-  if (albums.length) out.push(h("div", { class: "section-t" }, all ? `Albums · ${albums.length}` : "Albums"), h("div", { class: "hscroll" }, (all ? albums : albums.slice(0, 20)).map(albumCard)));
-  if (songs.length) out.push(h("div", { class: "section-t" }, all ? `Songs · ${songs.length}` : "Songs"), songList(all ? songs : songs.slice(0, 100), { ctx: all ? "Library" : "Search", mix: true }));
+  const row = (title, n, cards) => out.push(h("div", { class: "section-t" }, all ? `${title} · ${n}` : title), h("div", { class: "hscroll" }, cards));
+  if (artists.length) row("Artists", artists.length, artists.slice(0, all ? 400 : 40).map(artistCard));
+  if (albums.length) row("Albums", albums.length, albums.slice(0, all ? 400 : 40).map(albumCard));
+  if (songs.length) { const list = songs.slice(0, all ? 600 : 100); row("Songs", songs.length, list.map((x, i) => songCard(x, list, i, all ? "Library" : "Search"))); }
   if (!out.length) out.push(h("div", { class: "empty" }, `Nothing in your library matches “${q}”`));
   return out;
 }
@@ -1637,7 +1737,7 @@ function updateMini() {
   const s = player.current;
   if (nc.on) {
     if (!s) nc.update({ song: false, playing: false });
-    else { nc.update({ song: true, title: s.title, artist: s.artist || s.album || "", playing: player.playing }); nc.art(s.cover || "none", lib.cover(s.cover)?.small); }
+    else { nc.update({ song: true, title: s.title, artist: s.artist || s.album || "", playing: player.playing }); nc.art((s.cover || "none") + ":" + (lib.cover(s.cover)?.cv || 1), lib.cover(s.cover)?.small); }
   }
   if (!s) { if (!m.hidden) dockFlip(() => (m.hidden = true)); return; }
   if (m.hidden) { dockFlip(() => (m.hidden = false)); setTimeout(() => miniTuck.sync(), 30); }
@@ -1780,7 +1880,7 @@ function buildNp() {
   np.stage = h("div", { class: "stage" }, np.cover);
   np.title = h("div", { class: "t" });
   np.artist = h("div", { class: "s" });
-  np.fav = ib("heart", () => { const s = player.current; if (s) { const on = lib.toggleFav([s.id]); updateNpFav(); snack(on ? "Added to Favorites" : "Removed from Favorites"); refresh(); } });
+  np.fav = ib("heart", () => { const s = player.current; if (s) { const on = lib.toggleFav([s.id]); updateNpFav(); nc.haptic(on ? "success" : "tap"); snack(on ? "Added to Favorites" : "Removed from Favorites"); refresh(); } });
   np.fill = h("div", { class: "fillb" });
   np.seek = h("div", { class: "seek" }, h("div", { class: "track" }, np.fill));
   np.t0 = h("span", {}, "0:00"); np.t1 = h("span", {}, "0:00");
@@ -1827,12 +1927,14 @@ function buildNp() {
   };
   np.seek.addEventListener("pointerdown", (e) => { seeking = true; np.seek.classList.add("active"); np.seek.setPointerCapture(e.pointerId); seekTo(e); e.stopPropagation(); });
   np.seek.addEventListener("pointermove", (e) => seeking && seekTo(e));
-  np.seek.addEventListener("pointerup", (e) => { if (!seeking) return; const f = seekTo(e); seeking = false; np.seek.classList.remove("active"); player.seek(f * (player.audio.duration || 0)); });
+  np.seek.addEventListener("pointerup", (e) => { if (!seeking) return; const f = seekTo(e); seeking = false; np.seek.classList.remove("active"); player.seek(f * (player.audio.duration || 0)); nc.haptic("tick"); });
 
   // cover: tap to flip, swipe to skip
   let sx = 0, sy = 0, dx = 0, dy = 0, down = false, axis = "";
   const trail = [];
+  let detTap = null;           // flipped: a touch in the details scrolls them (and a plain tap flips back) — never drags the player
   np.cover.addEventListener("pointerdown", (e) => {
+    if (flipped && e.target.closest(".det")) { detTap = { x: e.clientX, y: e.clientY }; e.stopPropagation(); return; }
     down = true; sx = e.clientX; sy = e.clientY; dx = dy = 0; axis = ""; trail.length = 0;
     np.cover.setPointerCapture(e.pointerId); np.cover.style.transition = "none"; e.stopPropagation();
   });
@@ -1847,14 +1949,28 @@ function buildNp() {
       morph.drag(dy);
       return;
     }
-    if (axis === "x") np.cover.style.transform = `translateX(${dx}px) rotate(${dx / 40}deg)${flipped ? " rotateY(180deg)" : ""}`;
+    if (axis === "x" && !flipped) np.cover.style.transform = `translateX(${dx}px) rotate(${dx / 40}deg)`;   // flipped: no sideways swipe
   });
   const glideBack = () => {        // smooth return to the middle, no bounce
     np.cover.style.transition = "transform .32s cubic-bezier(.22,1,.36,1)";
     np.cover.style.transform = "";
     setTimeout(() => (np.cover.style.transition = ""), 340);
   };
-  np.cover.addEventListener("pointerup", () => {
+  // iPhone hands a touch over to scrolling (and cancels it) unless told otherwise: if that happens mid-drag, finish the drag
+  np.cover.addEventListener("pointercancel", () => {
+    detTap = null;              // (the details started scrolling)
+    if (!down) return;
+    down = false;
+    np.cover.style.transform = "";
+    if (axis === "y") morph.release(0); else glideBack();
+  });
+  np.cover.addEventListener("pointerup", (e) => {
+    if (detTap) {
+      const moved = Math.hypot(e.clientX - detTap.x, e.clientY - detTap.y);
+      detTap = null;
+      if (moved < 8) { nc.haptic("soft"); flip(); }
+      return;
+    }
     if (!down) return;
     down = false;
     if (axis === "y") {
@@ -1865,14 +1981,16 @@ function buildNp() {
       return;
     }
     np.cover.style.transition = "";
+    if (flipped && axis === "x") { np.cover.style.transform = ""; return; }   // details showing: sideways does nothing
     if (Math.abs(dx) < 8) {
       np.cover.style.transform = "";
       if ($("#np").classList.contains("lyrics")) return toggleLyrics(false);   // lyrics on: tapping the cover turns them off
-      flip(); return;
+      nc.haptic("soft"); flip(); return;
     }
     if (Math.abs(dx) <= 70) return glideBack();
     if (player.peek(dx < 0 ? 1 : -1) < 0) { glideBack(); dx < 0 ? player.next() : player.prev(); return; }  // same song again
     swipeOffset = dx;
+    nc.haptic("tap");
     dx < 0 ? player.next() : player.prev();
   });
 
@@ -1893,26 +2011,37 @@ function buildNp() {
     if (!grabbed) { grabbed = true; morph.grab(); }
     morph.drag(sdy);
   });
-  window.addEventListener("pointerup", () => {
+  const endSheet = () => {
     if (!dragging) return;
     dragging = false;
     if (grabbed) morph.release(vY);
-  });
+  };
+  window.addEventListener("pointerup", endSheet);
+  window.addEventListener("pointercancel", endSheet);
 }
 let swipeOffset = 0;
 
 function openNp() {
+  if (nc.on && !npOpen && !morph.nativePending) {        // iPhone: picture of the library first, then real glass
+    morph.nativePending = true;
+    nc.morphBegin(false, nc.accentRgb()).then((ok) => { morph.nativePending = false; openNpNow(ok); });
+    return;
+  }
+  openNpNow(false);
+}
+function openNpNow(native) {
   if (!player.current || npOpen) return;
   prepareNp();
   if (!motion()) { morph.clear(); return; }
   morph.rect = anchorRect();
+  if (native) { morph.native = true; morph.active = true; document.documentElement.classList.add("native-morph"); }
   morph.set(1);                                  // start as the bubble…
   morph.v = 0;
   requestAnimationFrame(() => morph.animate(0, SPRING_OPEN, () => morph.clear()));   // …and grow out of it, overshooting a touch
 }
 function prepareNp() {
+  unflipNow();                                   // always reopen on the artwork, not the details
   npOpen = true;
-  nc.hide();
   progCache.np = progCache.nps = -1;
   npTrack(0);
   updateProgress();
@@ -1930,23 +2059,37 @@ function prepareNp() {
 const SPRING_OPEN = { k: 210, c: 21 }, SPRING_CLOSE = { k: 240, c: 24 }, SPRING_BACK = { k: 260, c: 22 };
 const morph = {
   p: 0, v: 0, rect: null, raf: 0, active: false, nat: null,
-  dist() { return Math.max(220, (this.rect?.top || innerHeight * 0.8) * 0.8); },   // how far a finger travels for the whole morph
+  dist() { return Math.max(220, (this.rect?.top || innerHeight * 0.8) * 0.95); },  // how far a finger travels for the whole morph (≈ the top edge follows it)
   /** where the player's pieces sit when it's full screen (measured once per morph, with nothing moved) */
   measure() {
     const el = $("#np"), pieces = this.pieces();
     for (const x of [np.stage, ...pieces.flip.map((f) => f.el), ...pieces.fade]) { x.style.transform = ""; x.style.opacity = ""; }
     const R = (x) => x.getBoundingClientRect();
     const titles = np.wrapEl.querySelector(".titles");
-    this.nat = { cover: R(np.cover), stage: R(np.stage), titles: R(titles), pp: R(np.pp) };
+    const ctrls = np.wrapEl.querySelector(".ctrls");
+    this.nat = { cover: R(np.cover), stage: R(np.stage), titles: R(titles), pp: R(np.pp), prev: R(ctrls.children[1]), next: R(ctrls.children[3]), seek: R(np.seek) };
     el.classList.add("morphing");
   },
   pieces() {
     const w = np.wrapEl, ctrls = w.querySelector(".ctrls");
     return {
-      flip: [{ el: w.querySelector(".titles"), from: "text", nat: "titles" }, { el: np.pp, from: "play", nat: "pp" }],
-      fade: [w.querySelector(".top"), w.querySelector(".lyr"), np.seek, w.querySelector(".times"), w.querySelector(".extras"),
-        ...[...ctrls.children].filter((c) => c !== np.pp), np.viz].filter(Boolean),
+      flip: [{ el: w.querySelector(".titles"), from: "text", nat: "titles" }, { el: np.pp, from: "play", nat: "pp" },
+        { el: ctrls.children[1], from: "prev", nat: "prev" }, { el: ctrls.children[3], from: "next", nat: "next" },
+        { el: np.seek, from: "bar", nat: "seek", stretch: true }],
+      fade: [w.querySelector(".top"), w.querySelector(".lyr"), w.querySelector(".times"), w.querySelector(".extras"),
+        ctrls.children[0], ctrls.children[4], np.viz].filter(Boolean),
     };
+  },
+  /** iPhone: switch to real Liquid Glass (a picture of the library + native glass behind the see-through web view) */
+  async goNative(reuse) {
+    if (!nc.on || this.native || this.nativePending) return;
+    this.nativePending = true;
+    const ok = await nc.morphBegin(reuse, nc.accentRgb());
+    this.nativePending = false;
+    if (!ok || !this.active) { if (ok) nc.morphEnd(npOpen); return; }
+    this.native = true;
+    document.documentElement.classList.add("native-morph");
+    this.set(this.p);
   },
   set(p) {
     this.p = p; this.active = true;
@@ -1963,12 +2106,13 @@ const morph = {
     const e = q >= 0 ? 1 - Math.pow(1 - Math.min(q, 1), 1.15) + Math.max(0, q - 1) : q;      // past 1 / below 0: the bounces
     const rc = { l: lerp(full.l, bubble.l, e), t: lerp(full.t, bubble.t, e), r: lerp(full.r, bubble.r, e), b: lerp(full.b, bubble.b, e) };
     const rad = q <= 0 ? 0 : Math.min(40, 400 * q) * (1 - Math.min(1, q)) + bubbleRad * Math.min(1, q);
-    el.style.clipPath = `inset(${rc.t.toFixed(1)}px ${(W - rc.r).toFixed(1)}px ${(H - rc.b).toFixed(1)}px ${rc.l.toFixed(1)}px round ${rad.toFixed(1)}px)`;
+    el.style.clipPath = this.native ? "none" : `inset(${rc.t.toFixed(1)}px ${(W - rc.r).toFixed(1)}px ${(H - rc.b).toFixed(1)}px ${rc.l.toFixed(1)}px round ${rad.toFixed(1)}px)`;
     // the glass itself (behind the player's controls)
     if (!this.g?.isConnected) this.g = el.insertBefore(h("div", { class: "lgm" }), np.wrapEl);
     const gs = this.g.style;
     const glassO = 1 - ss(0, NEAR, NEAR - q);            // full glass while stretching; fades as the real background arrives
-    gs.display = glassO > 0.002 ? "block" : "none";
+    gs.display = glassO > 0.002 && !this.native ? "block" : "none";
+    if (this.native) nc.morphFrame({ x: rc.l, y: rc.t, w: rc.r - rc.l, h: rc.b - rc.t, rad, o: glassO });
     gs.left = rc.l.toFixed(1) + "px"; gs.top = rc.t.toFixed(1) + "px";
     gs.width = Math.max(0, rc.r - rc.l).toFixed(1) + "px"; gs.height = Math.max(0, rc.b - rc.t).toFixed(1) + "px";
     gs.borderRadius = rad.toFixed(1) + "px"; gs.opacity = glassO.toFixed(3);
@@ -1993,15 +2137,26 @@ const morph = {
     }
     const pieces = this.pieces();
     for (const f of pieces.flip) {
-      flipTo(f.el, parts[f.from], N[f.nat], "uniform");
-      f.el.style.opacity = (f.from === "text" || f.from === "play") && !parts.showText ? (1 - ss(0.3, 0.8, q)).toFixed(3) : "";
+      const from = parts[f.from];
+      if (!from || !from.w) {                         // nothing like it in the bar (e.g. no back button upright): it fades
+        f.el.style.transform = `translate3d(0, ${(28 * ss(0, 1, q)).toFixed(1)}px, 0)`;
+        f.el.style.opacity = (1 - ss(0.12, 0.62, q)).toFixed(3);
+        continue;
+      }
+      flipTo(f.el, from, N[f.nat], f.stretch ? "stretch" : "uniform");
+      f.el.style.opacity = !parts.showText ? (1 - ss(0.3, 0.8, q)).toFixed(3) : (1 - ss(0.85, 1, q) * 0.6).toFixed(3);
     }
+    // the bubble / tabs / top bar fade in and out with it (crossfading with the pieces that travel), never popping
+    nc.chromeFade(+ss(0.78, 1, q).toFixed(3));
     const cf = 1 - ss(0.12, 0.62, q);                    // everything else fades in and glides up into place
     for (const x of pieces.fade) { x.style.opacity = cf.toFixed(3); x.style.transform = `translate3d(0, ${(28 * ss(0, 1, q)).toFixed(1)}px, 0)`; }
   },
   clear() {
     cancelAnimationFrame(this.raf);
     this.active = false; this.p = 0; this.v = 0; this.rect = null; this.nat = null;
+    if (this.native) { this.native = false; document.documentElement.classList.remove("native-morph"); nc.morphEnd(npOpen); }
+    if (npOpen) nc.hide();                           // fully open: the bubble stays out of the way
+    setTimeout(npPlayButton, 0);
     if (this.g) this.g.style.display = "none";
     const el = $("#np");
     el.style.clipPath = ""; el.style.transform = ""; el.style.removeProperty("--bgo");
@@ -2027,7 +2182,7 @@ const morph = {
     };
     this.raf = requestAnimationFrame(step);
   },
-  grab() { cancelAnimationFrame(this.raf); this.rect = anchorRect(); this.start = this.p || 0; this.v = 0; },
+  grab() { cancelAnimationFrame(this.raf); this.rect = anchorRect(); this.start = this.p || 0; this.v = 0; npPlayButton(); if (npOpen) this.goNative(true); },
   drag(dy) {                         // dy > 0: towards the bubble
     let p = (this.start || 0) + dy / this.dist();
     if (p < 0) p = p * 0.25;         // pulling the other way just stretches a little
@@ -2053,12 +2208,17 @@ function anchorRect() {
 /** where the bar's album art, titles and play button are (for the pieces to travel from/to) */
 function anchorParts(r) {
   const a = nc.on && nc.anchorBox;
-  if (a && a.aw > 0) return { art: { x: a.ax, y: a.ay, w: a.aw, h: a.ah }, text: { x: a.tx, y: a.ty, w: a.tw, h: a.th }, play: { x: a.px, y: a.py, w: a.pw, h: a.ph }, showText: !a.tucked };
+  if (a && a.aw > 0) return { art: { x: a.ax, y: a.ay, w: a.aw, h: a.ah }, text: { x: a.tx, y: a.ty, w: a.tw, h: a.th }, play: { x: a.px, y: a.py, w: a.pw, h: a.ph },
+    prev: a.vw && !a.tucked ? { x: a.vx, y: a.vy, w: a.vw, h: a.vh } : null, next: a.nw && !a.tucked ? { x: a.nx, y: a.ny, w: a.nw, h: a.nh } : null,
+    bar: a.bw ? { x: a.bx, y: a.by, w: a.bw, h: a.bh } : null, showText: !a.tucked };
   const side = matchMedia("(orientation: landscape) and (min-width: 640px)").matches, tucked = side && miniTuck.tucked;
   const art = tucked ? { x: r.left + 10, y: r.top + 9, w: 48, h: 48 } : side ? { x: r.left + 9, y: r.top + 9, w: 48, h: 48 } : { x: r.left + 10, y: r.top + 9, w: 44, h: 44 };
   const w = r.right - r.left;
   return { art, text: { x: art.x + art.w + 12, y: r.top + 12, w: Math.max(40, w - art.w - 170), h: 40 },
-    play: side ? { x: r.right - 104, y: r.top + 10, w: 46, h: 46 } : { x: r.right - 100, y: r.top + 10, w: 42, h: 42 }, showText: !tucked };
+    play: side ? { x: r.right - 104, y: r.top + 10, w: 46, h: 46 } : { x: r.right - 100, y: r.top + 10, w: 42, h: 42 }, showText: !tucked,
+    prev: side && !tucked ? { x: r.right - 152, y: r.top + 11, w: 44, h: 44 } : null,
+    next: tucked ? null : side ? { x: r.right - 52, y: r.top + 11, w: 44, h: 44 } : { x: r.right - 50, y: r.top + 9, w: 44, h: 44 },
+    bar: tucked ? { x: r.left + 10, y: r.top + 78, w: 48, h: 2 } : { x: r.left + 14, y: (side ? r.bottom - 3 : r.top + 60), w: w - 28, h: 2 } };
 }
 const clipFor = (r, rad) => `inset(${Math.round(r.top)}px ${Math.round(innerWidth - r.right)}px ${Math.round(innerHeight - r.bottom)}px ${Math.round(r.left)}px round ${rad}px)`;
 function bounceBubble() {
@@ -2079,18 +2239,29 @@ function closeNp(opts = {}) {
   const el = $("#np");
   el.setAttribute("aria-hidden", "true");
   lyrView.stop();
-  if (!motion()) { el.classList.remove("open"); morph.clear(); nc.show(false); return true; }
+  if (!motion()) { el.classList.remove("open"); morph.clear(); unflipNow(); nc.show(false); return true; }
   // shrink into the bubble from wherever it is (a finger may be partway), overshoot a hair, then the bubble bounces
   if (!morph.active) { morph.rect = anchorRect(); morph.set(0); morph.v = 0; }
   else morph.rect = morph.rect || anchorRect();
+  npPlayButton();
+  morph.goNative(true);
   const done = () => {
     if (npOpen) return;
     el.classList.remove("open");
     morph.clear();
-    if (nc.on) nc.show(true); else bounceBubble();
+    unflipNow();
+    if (nc.on) { nc.show(true); nc.haptic("thud"); } else bounceBubble();
   };
   morph.animate(1, SPRING_CLOSE, done);
   return true;
+}
+/** back to the front of the cover at once (no turning animation) — the player always reopens on the artwork */
+function unflipNow() {
+  if (!flipped) return;
+  np.cover.style.transition = "none";
+  flip(false);
+  np.cover.getBoundingClientRect();
+  requestAnimationFrame(() => (np.cover.style.transition = ""));
 }
 function flip(force) {
   flipped = force ?? !flipped;
@@ -2230,8 +2401,19 @@ function setBackdrop(url, color) {
   (im.decode ? im.decode() : Promise.resolve()).catch(() => {}).then(show);      // only fade once it's ready: no blank flash
 }
 
+/** iPhone: the full player's play / pause is a real clear-glass button laid over the web one, while the player is open and still */
+function npPlayButton() {
+  if (!nc.on || !np.pp) return;
+  const show = npOpen && !morph.active && $("#sheet").hidden;
+  const r = show ? np.pp.getBoundingClientRect() : null;
+  if (show && r.width > 0) nc.npButton({ show: true, x: r.left, y: r.top, w: r.width, playing: player.playing });
+  else nc.npButton({ show: false });
+  document.documentElement.classList.toggle("np-native-pp", !!(show && r?.width > 0));
+}
+addEventListener("resize", () => setTimeout(npPlayButton, 350));
 function npState() {
   if (!np.pp) return;
+  npPlayButton();
   np.pp.replaceChildren(icon(player.playing ? "pause" : "play"));
   np.shuffle.classList.toggle("on", player.shuffle);
   np.shuffle.classList.toggle("dim", !player.shuffle);
@@ -2241,6 +2423,7 @@ function npState() {
 }
 
 function toggleLyrics(force) {
+  setTimeout(npPlayButton, 0); setTimeout(npPlayButton, 520);     // the play button moves in lyrics mode
   const el = $("#np");
   const on = el.classList.toggle("lyrics", force);
   np.lyrBtn.classList.toggle("on", on);
@@ -2484,7 +2667,15 @@ async function boot() {
     prev: () => player.prev(),
     open: () => { if (player.current && !npOpen) openNp(); },
     // drag up on the native bubble: the player grows out of it under the finger
-    dragStart: () => { if (!player.current || npOpen) return; prepareNp(); morph.rect = anchorRect(); morph.set(1); morph.grab(); morph.start = 1; },
+    dragStart: async () => {
+      if (!player.current || npOpen || morph.nativePending) return;
+      morph.nativePending = true;
+      const ok = await nc.morphBegin(false, nc.accentRgb());
+      morph.nativePending = false;
+      prepareNp(); morph.rect = anchorRect();
+      if (ok) { morph.native = true; morph.active = true; document.documentElement.classList.add("native-morph"); }
+      morph.set(1); morph.grab(); morph.start = 1;
+    },
     drag: (e) => { if (npOpen && morph.active) morph.drag(e.dy); },
     dragEnd: (e) => {
       if (!npOpen || !morph.active) return;
@@ -2495,17 +2686,26 @@ async function boot() {
     },
   });
   if (nc.on) {
+    await initLibraryURL();
+    setupBackgroundPlayback();
     let at = 0;
     const prog = (force) => { const now = performance.now(); if (!force && now - at < 900) return; at = now; const a = player.audio; nc.progress(a.currentTime, a.duration || player.current?.duration, player.playing); };
     player.addEventListener("time", () => prog());
     for (const ev of ["state", "track"]) player.addEventListener(ev, () => prog(true));
     for (const el of player.els) el.addEventListener("seeked", () => prog(true));
+    // a light tap for every button, row and card you touch (programmatic clicks don't count)
+    document.addEventListener("click", (e) => {
+      if (!e.isTrusted) return;
+      if (e.target.closest("button, .row, .arow, .card, .chip, .item, [role=button], .switch")) nc.haptic("tap");
+    }, true);
     nc.tint(getComputedStyle(document.documentElement).getPropertyValue("--accent").trim());
     nc.update({ tab: stack[0].type });
     nc.header(pageEl, pageEl?.classList.contains("scrolled"));
     miniTuck.sync();
   }
   await restoreSession();
+  // songs added before the colour picking improved: recompute their colours quietly, then refresh what's on screen
+  setTimeout(() => lib.refreshColors((id) => { if (player.current?.cover === id) npTrack(0); }).then(() => { if (pageEl) refresh(); }), 1500);
   if (ios) {
     // the keyboard covers the bottom of the screen on iPhone; lift sheets above it
     const vv = window.visualViewport;

@@ -38,12 +38,31 @@ export const nc = {
       prominent: b.classList.contains("hbtn") && !b.classList.contains("tonal"),
       on: b.classList.contains("on"),
     }));
-    const m = { title: head.querySelector("h1")?.textContent || "", back: !!head.querySelector(".back"), scrolled: !!scrolled, actions };
+    // a page with its own Play / Shuffle (album, playlist, artist, Songs…): the top bar's appear only once those are under it
+    const own = page.querySelector(".bplay");
+    let textVisible = true;
+    if (own) {
+      const barBottom = (parseFloat(getComputedStyle(head).paddingTop) || 10) - 10 + 60;     // the glass bar: notch + 60
+      textVisible = own.getBoundingClientRect().bottom < barBottom + 4;
+    }
+    const m = { title: head.querySelector("h1")?.textContent || "", back: !!head.querySelector(".back"), scrolled: !!scrolled, actions, textVisible };
     const key = JSON.stringify(m);
     if (key === this.lastHead) return;
     this.lastHead = key;
     NC.header(m).catch(() => {});
   },
+  chromeFade(a) { if (this.on && a !== this.lastFade) { this.lastFade = a; NC.chromeFade({ a }).catch(() => {}); } },
+  async bgStart(o) { try { return !!(await NC.bgStart(o))?.ok; } catch { return false; } },
+  async bgStop() { try { return await NC.bgStop(); } catch { return null; } },
+  haptic(kind = "tap") { if (this.on) NC.haptic({ kind }).catch(() => {}); },
+  npButton(o) { if (this.on) NC.npButton(o).catch(() => {}); },
+  async morphBegin(reuse, rgb) {
+    if (!this.on) return false;
+    try { return !!(await NC.morphBegin({ reuse: !!reuse, r: rgb?.[0] || 0, g: rgb?.[1] || 0, b: rgb?.[2] || 0 }))?.ok; } catch { return false; }
+  },
+  morphFrame(o) { if (this.on) NC.morphFrame(o).catch(() => {}); },
+  morphEnd(keep) { if (this.on) return NC.morphEnd({ keep: !!keep }).catch(() => {}); },
+  accentRgb() { return cssRgb(getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#f7a"); },
   progressShow(title) { if (this.on) NC.progressShow({ title }).catch(() => {}); },
   progressUpdate(o) { if (this.on) NC.progressUpdate(o).catch(() => {}); },
   progressHide() { if (this.on) NC.progressHide().catch(() => {}); },

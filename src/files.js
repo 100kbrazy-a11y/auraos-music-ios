@@ -11,7 +11,13 @@ const NC = registerPlugin("NativeChrome");
 let libURL = null;             // file:// URL of the app's Library folder
 async function libraryURL() { return (libURL ||= (await NC.libraryPath()).url.replace(/\/?$/, "/")); }
 const encPath = (p) => p.split("/").map(encodeURIComponent).join("/");
+/** call once at start-up so songFileURLNow() can answer instantly */
+export async function initLibraryURL() { if (onDisk) { try { await libraryURL(); } catch {} } }
+/** file:// URL of a song stored on the phone ("" if it isn't, or not known yet) — no waiting */
+export function songFileURLNow(s) { return onDisk && s?.store === "disk" && libURL ? libURL + encPath(ROOT + s.file) : ""; }
 const ROOT = "Songs/";
+/** file:// URL of a path inside the app's Library folder */
+export async function libraryFileURL(rel) { return (await libraryURL()) + encPath(rel); }
 let F = null, DIR = null;
 // Note: a Capacitor plugin object must never be the *result* of a promise (an async function's return value):
 // the promise asks it for .then, the plugin answers "Filesystem.then() is not implemented" and the promise never

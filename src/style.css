@@ -675,8 +675,9 @@ html, body, #app { background: var(--bg); }
    and a soft sheen across the top. The tab highlight is a small glass lens.
    ====================================================================== */
 :root {
-  --lg-tint: color-mix(in srgb, var(--accent) 17%, rgba(22, 22, 28, .34));     /* every glass surface carries a little of the song's colour */
-  --lg-glow: color-mix(in srgb, var(--accent) 16%, transparent);
+  --tint-mix: 16%;     /* how much of the song's colour every glass surface carries (one strength everywhere) */
+  --lg-tint: color-mix(in srgb, var(--accent) var(--tint-mix), rgba(22, 22, 28, .34));     /* every glass surface carries a little of the song's colour */
+  --lg-glow: color-mix(in srgb, var(--accent) var(--tint-mix), transparent);
   --lg-filter: blur(14px) saturate(2.1) brightness(1.06);
   --lg-shadow: 0 16px 44px rgba(0, 0, 0, .42), 0 2px 6px rgba(0, 0, 0, .18);
   --lg-inner: inset 0 1px 0 rgba(255, 255, 255, .26), inset 0 -1px 0 rgba(255, 255, 255, .06), inset 0 0 24px var(--lg-glow);
@@ -711,7 +712,7 @@ html, body, #app { background: var(--bg); }
 
 /* the tab highlight: a little glass lens that brightens what is under it */
 #tabs .ind, #dock #tabs .ind {
-  background: linear-gradient(180deg, rgba(255, 255, 255, .2), rgba(255, 255, 255, .07)), color-mix(in srgb, var(--accent) 20%, transparent);
+  background: linear-gradient(180deg, rgba(255, 255, 255, .2), rgba(255, 255, 255, .07)), color-mix(in srgb, var(--accent) var(--tint-mix), transparent);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .5), inset 0 -1px 0 rgba(255, 255, 255, .14), inset 0 0 0 .5px rgba(255, 255, 255, .32),
               inset 0 -8px 14px rgba(255, 255, 255, .05), 0 4px 14px rgba(0, 0, 0, .22); }
 #tabs .ind.drag, #dock #tabs .ind.drag {
@@ -720,16 +721,16 @@ html, body, #app { background: var(--bg); }
               0 10px 26px rgba(0, 0, 0, .3); }
 
 /* sheets, dialogs, toasts, the header once you scroll */
-#sheet { background: color-mix(in srgb, var(--accent) 14%, rgba(28, 28, 34, .62)); backdrop-filter: blur(30px) saturate(2); -webkit-backdrop-filter: blur(30px) saturate(2);
+#sheet { background: color-mix(in srgb, var(--accent) var(--tint-mix), rgba(28, 28, 34, .62)); backdrop-filter: blur(30px) saturate(2); -webkit-backdrop-filter: blur(30px) saturate(2);
   box-shadow: 0 -10px 40px rgba(0, 0, 0, .4), inset 0 1px 0 rgba(255, 255, 255, .22), inset 0 0 0 .5px rgba(255, 255, 255, .14); }
 #sheet.dialog { box-shadow: var(--lg-shadow), inset 0 1px 0 rgba(255, 255, 255, .24), inset 0 0 0 .5px rgba(255, 255, 255, .16), inset 0 0 30px var(--lg-glow); }
 #sheet .field { background: rgba(255, 255, 255, .08); box-shadow: inset 0 0 0 .5px rgba(255, 255, 255, .12); }
 #scrim { backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); }
-#snack .s { background: color-mix(in srgb, var(--accent) 14%, rgba(245, 245, 250, .74)); backdrop-filter: blur(20px) saturate(2); -webkit-backdrop-filter: blur(20px) saturate(2);
+#snack .s { background: color-mix(in srgb, var(--accent) var(--tint-mix), rgba(245, 245, 250, .74)); backdrop-filter: blur(20px) saturate(2); -webkit-backdrop-filter: blur(20px) saturate(2);
   box-shadow: 0 10px 30px rgba(0, 0, 0, .3), inset 0 1px 0 rgba(255, 255, 255, .8), inset 0 0 0 .5px rgba(255, 255, 255, .6); }
-.page.scrolled .head { background: linear-gradient(color-mix(in srgb, var(--accent) 12%, rgba(11, 11, 14, .55)), color-mix(in srgb, var(--accent) 7%, rgba(11, 11, 14, .25))); backdrop-filter: blur(16px) saturate(1.9); -webkit-backdrop-filter: blur(16px) saturate(1.9);
+.page.scrolled .head { background: linear-gradient(color-mix(in srgb, var(--accent) var(--tint-mix), rgba(11, 11, 14, .55)), color-mix(in srgb, var(--accent) var(--tint-mix), rgba(11, 11, 14, .25))); backdrop-filter: blur(16px) saturate(1.9); -webkit-backdrop-filter: blur(16px) saturate(1.9);
   box-shadow: inset 0 -.5px 0 rgba(255, 255, 255, .12); }
-.chip { background: color-mix(in srgb, var(--accent) 12%, rgba(255, 255, 255, .06)); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .12), inset 0 0 0 .5px rgba(255, 255, 255, .1); }
+.chip { background: color-mix(in srgb, var(--accent) var(--tint-mix), rgba(255, 255, 255, .06)); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .12), inset 0 0 0 .5px rgba(255, 255, 255, .1); }
 .chip.on { background: linear-gradient(180deg, rgba(255, 255, 255, .16), rgba(255, 255, 255, .04)), color-mix(in srgb, var(--accent) 30%, transparent);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .36), inset 0 0 0 .5px rgba(255, 255, 255, .22); }
 
@@ -763,7 +764,7 @@ html.ios .page { -webkit-overflow-scrolling: touch; }
 /* the glass sheet over the player while it shrinks into / grows out of the bubble */
 #np .lgm { position: absolute; display: none; z-index: 50; pointer-events: none; will-change: opacity;
   background: radial-gradient(140% 60% at 30% -10%, rgba(255, 255, 255, .2), transparent 60%),
-              color-mix(in srgb, var(--accent) 20%, rgba(255, 255, 255, .05));
+              color-mix(in srgb, var(--accent) var(--tint-mix), rgba(255, 255, 255, .05));
   backdrop-filter: blur(26px) saturate(2.4) brightness(1.14); -webkit-backdrop-filter: blur(26px) saturate(2.4) brightness(1.14);
   box-shadow: inset 0 2px 0 rgba(255, 255, 255, .85),                 /* the bright lip along the leading edge */
               inset 0 16px 24px -14px rgba(255, 255, 255, .45),       /* light bending just inside it */
@@ -808,7 +809,7 @@ html.native-chrome .page.scrolled .head h1 { visibility: hidden; }
 #np .face.back { background: linear-gradient(160deg, rgba(255, 255, 255, .17), rgba(255, 255, 255, .05) 55%, rgba(255, 255, 255, .09));
   backdrop-filter: blur(14px) saturate(1.9) brightness(1.08); -webkit-backdrop-filter: blur(14px) saturate(1.9) brightness(1.08);
   box-shadow: 0 30px 70px rgba(0, 0, 0, .45), inset 0 1.5px 0 rgba(255, 255, 255, .55), inset 0 -1px 0 rgba(255, 255, 255, .18),
-              inset 0 0 0 1px rgba(255, 255, 255, .2), inset 0 0 40px color-mix(in srgb, var(--accent) 18%, transparent); }
+              inset 0 0 0 1px rgba(255, 255, 255, .2), inset 0 0 40px color-mix(in srgb, var(--accent) var(--tint-mix), transparent); }
 #np .face.back .blur { inset: 0; filter: saturate(1.2); opacity: .2; }
 #np .face.back::after { content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1.5px; pointer-events: none; z-index: 2;
   background: var(--lg-rim);
@@ -823,3 +824,25 @@ html.native-chrome .page.scrolled .head h1 { visibility: hidden; }
               inset 0 -14px 22px rgba(255, 255, 255, .06), inset 0 10px 18px rgba(255, 255, 255, .05), 0 12px 30px rgba(0, 0, 0, .28); }
 #np .pp:active { background: radial-gradient(120% 80% at 50% -10%, rgba(255, 255, 255, .4), rgba(255, 255, 255, .08) 52%, rgba(255, 255, 255, .04)); }
 #np .pp svg.i { filter: drop-shadow(0 1px 3px rgba(0, 0, 0, .45)); }
+
+/* the full player handles its own drags (shrink, swipe, seek): don't let the phone turn them into scrolls and cancel them */
+#np, #np .wrap, #np .cover, #np .stage { touch-action: none; }
+#np .face.back .det, #np .lyr canvas { touch-action: pan-y; }
+
+/* Browse: artists and songs as cards the same size as album cards, one horizontal row each */
+.hscroll .card.artist-card .art { border-radius: 50%; }
+.hscroll .card.artist-card .t, .hscroll .card.artist-card .s { text-align: center; }
+.hscroll .card.song-card.now .t { color: var(--accent); }
+
+/* iPhone: the real-glass play button sits over the web one */
+html.np-native-pp #np .pp { opacity: 0; }
+
+/* growing / shrinking with real Liquid Glass: the web view turns see-through; the library is a picture behind it */
+html.native-morph, html.native-morph body, html.native-morph #app { background: transparent !important; }
+html.native-morph #pages, html.native-morph #aurora, html.native-morph #dock, html.native-morph #snack, html.native-morph #selbar { visibility: hidden !important; }
+html.native-morph #np .lgm { display: none !important; }
+
+/* the big cover on album / artist pages: fill its square (it was drawn at full size, so only the top-left showed) */
+.bigart > img, .bigart > .ph { display: block; width: 100%; height: 100%; object-fit: cover; }
+/* flipped cover: the details only scroll up and down (no sideways drift, no pulling the page) */
+#np .face.back .det { overflow-x: hidden; overscroll-behavior: contain; }

@@ -15,11 +15,12 @@
     "@capacitor/app": "^6.0.3",
     "@capacitor/core": "^6.2.3",
     "@capacitor/filesystem": "^6.0.4",
+    "@capacitor/ios": "^6.2.3",
     "@capacitor/share": "^6.0.4",
     "@capacitor/status-bar": "^6.0.3",
     "@jofr/capacitor-media-session": "^4.0.0",
     "music-metadata": "^12.3.5",
-    "@capacitor/ios": "^6.2.3"
+    "youtubei.js": "^18.3.0"
   },
   "private": true,
   "type": "module",

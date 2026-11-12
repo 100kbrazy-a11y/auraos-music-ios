@@ -388,6 +388,7 @@ class Player extends EventTarget {
   }
 
   async updateSession(meta = false) {
+    if (this.bgActive) return;                 // the phone's own player has the lock screen right now
     const s = this.current;
     if (!s) return;
     try {

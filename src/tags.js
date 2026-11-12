@@ -91,16 +91,29 @@ export async function readTags(blob, name) {
 }
 
 /** Decode an image and make a square JPEG of `size` px. */
+/** Decode a picture through an <img> (iPhone's createImageBitmap can draw it at full size, so only the top-left shows). */
+export async function loadImage(blob) {
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    return img;
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+}
+
 export async function squareJpeg(blob, size) {
   try {
-    const bmp = await createImageBitmap(blob);
-    const s = Math.min(bmp.width, bmp.height);
+    const img = await loadImage(blob);
+    const w = img.naturalWidth, h = img.naturalHeight, s = Math.min(w, h);
+    if (!s) return null;
     const cv = document.createElement("canvas");
     cv.width = cv.height = size;
     const g = cv.getContext("2d");
     g.imageSmoothingQuality = "high";
-    g.drawImage(bmp, (bmp.width - s) / 2, (bmp.height - s) / 2, s, s, 0, 0, size, size);
-    bmp.close?.();
+    g.drawImage(img, (w - s) / 2, (h - s) / 2, s, s, 0, 0, size, size);    // the centre square, scaled to fit
     return await new Promise((r) => cv.toBlob(r, "image/jpeg", 0.9));
   } catch {
     return null;
@@ -108,22 +121,47 @@ export async function squareJpeg(blob, size) {
 }
 
 /** A pleasant accent colour from a cover. */
+/** The cover's colour: its *dominant* hue (a colour that's actually in the picture, not an average of everything),
+ *  and a soft grey for black-and-white covers. */
+export const COLOR_VERSION = 3;
 export async function coverColor(blob) {
   try {
-    const bmp = await createImageBitmap(blob, { resizeWidth: 24, resizeHeight: 24 });
+    const N = 40;
+    const img = await loadImage(blob);
     const cv = document.createElement("canvas");
-    cv.width = cv.height = 24;
-    const g = cv.getContext("2d");
-    g.drawImage(bmp, 0, 0);
-    const d = g.getImageData(0, 0, 24, 24).data;
-    let r = 0, gg = 0, b = 0, w = 0;
+    cv.width = cv.height = N;
+    const g = cv.getContext("2d", { willReadFrequently: true });
+    g.drawImage(img, 0, 0, N, N);                          // the whole cover, shrunk (not just its corner)
+    const d = g.getImageData(0, 0, N, N).data;
+    const B = 36, bins = Array.from({ length: B }, () => ({ w: 0, r: 0, g: 0, b: 0 }));
+    let colorful = 0, nr = 0, ng = 0, nb = 0, nn = 0;
     for (let i = 0; i < d.length; i += 4) {
-      const mx = Math.max(d[i], d[i + 1], d[i + 2]), mn = Math.min(d[i], d[i + 1], d[i + 2]);
-      const sat = mx ? (mx - mn) / mx : 0;
-      const wt = 0.05 + sat * sat * (mx / 255);
-      r += d[i] * wt; gg += d[i + 1] * wt; b += d[i + 2] * wt; w += wt;
+      const r = d[i] / 255, gg = d[i + 1] / 255, bb = d[i + 2] / 255;
+      const mx = Math.max(r, gg, bb), mn = Math.min(r, gg, bb), v = mx, sat = mx ? (mx - mn) / mx : 0;
+      if (v < 0.14) continue;                                   // near-black says nothing about the colour
+      if (sat < 0.2) { nr += r; ng += gg; nb += bb; nn++; continue; }
+      let h = 0;
+      const dd = mx - mn;
+      h = mx === r ? (gg - bb) / dd + (gg < bb ? 6 : 0) : mx === gg ? (bb - r) / dd + 2 : (r - gg) / dd + 4;
+      h /= 6;
+      const w = Math.pow(sat, 1.4) * Math.pow(v, 0.8);
+      const k = Math.min(B - 1, Math.floor(h * B));
+      bins[k].w += w; bins[k].r += r * w; bins[k].g += gg * w; bins[k].b += bb * w;
+      colorful++;
     }
-    return hslFix([r / w, gg / w, b / w]);
+    const total = (d.length / 4);
+    if (colorful < total * 0.06) {                            // basically black / white / grey: keep it neutral
+      const l = nn ? (nr + ng + nb) / (3 * nn) : 0.6;
+      return `hsl(230 6% ${Math.round(Math.min(72, Math.max(58, l * 100)))}%)`;
+    }
+    let best = 0, bestW = -1;
+    for (let k = 0; k < B; k++) {                             // strongest hue, counting its neighbours a little
+      const w = bins[k].w + 0.5 * (bins[(k + B - 1) % B].w + bins[(k + 1) % B].w);
+      if (w > bestW) { bestW = w; best = k; }
+    }
+    let r = 0, gg = 0, bb = 0, w = 0;
+    for (const k of [(best + B - 1) % B, best, (best + 1) % B]) { r += bins[k].r; gg += bins[k].g; bb += bins[k].b; w += bins[k].w; }
+    return hslFix([(r / w) * 255, (gg / w) * 255, (bb / w) * 255]);
   } catch {
     return null;
   }
@@ -140,6 +178,6 @@ function hslFix([r, g, b]) {
     h = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
     h /= 6;
   }
-  const L = Math.min(0.72, Math.max(0.58, l)), S = Math.min(0.85, Math.max(0.35, s));
+  const L = Math.min(0.72, Math.max(0.56, l)), S = Math.min(0.88, Math.max(0.4, s));
   return `hsl(${Math.round(h * 360)} ${Math.round(S * 100)}% ${Math.round(L * 100)}%)`;
 }
