@@ -7,6 +7,7 @@ name: Build iPhone app
 on:
   push:
     branches: [main]
+    paths-ignore: ["**.md", "docs/**"]        # (README / picture changes don't need a new build)
   workflow_dispatch:
 
 permissions:
