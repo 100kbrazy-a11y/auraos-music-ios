@@ -1002,8 +1002,8 @@ function settingsModel(sizeText) {
       { id: "motion", type: "toggle", symbol: "sparkles", title: "Motion Effects", value: motion() },
     ] },
     { title: "About", footer: "Strata Music for iPhone · music packs work with the desktop and Android apps too", rows: [
-      { id: "update", type: "action", symbol: "arrow.down.circle", title: "Check for Updates", detail: `${current.version}`, stay: true },
-      { id: "whatsnew", type: "action", symbol: "sparkle", title: "What's New", detail: current.name, stay: true },
+      { id: "update", type: "action", symbol: "arrow.down.circle", title: "Check for Updates", detail: `${upd.current.version}`, stay: true },
+      { id: "whatsnew", type: "action", symbol: "sparkle", title: "What's New", detail: upd.current.name, stay: true },
       { id: "diag", type: "action", symbol: "info.circle", title: "Diagnostics" },
     ] },
   ];

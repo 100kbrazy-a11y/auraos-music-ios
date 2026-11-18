@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.1.1",
+    "name": "The Search Update",
+    "date": "2026-11-18",
+    "notes": [
+      "Fixed Settings not opening"
+    ]
+  },
+  {
     "version": "1.1.0",
     "name": "The Search Update",
     "date": "2026-11-18",
@@ -16,6 +24,8 @@
     "version": "1.0.0",
     "name": "Strata Music for iPhone",
     "date": "2026-11-01",
-    "notes": ["The first Strata Music for iPhone build"]
+    "notes": [
+      "The first Strata Music for iPhone build"
+    ]
   }
 ]
