@@ -270,22 +270,54 @@ async function fetchAudio(id, onFrac) {
     + (bot && !signedIn ? " · signing in to YouTube (Settings › YouTube Account) may help" : ""));
 }
 
-/** Download to Library/Incoming natively (straight to a file; never through the web view). */
+/** Download to Library/Incoming natively (straight to a file; never through the web view).
+ *  First the one-piece file download; if YouTube refuses that, the same audio in small pieces (like the Android app does),
+ *  which also tells the log the real HTTP status. */
 async function download(url, size, ua, id, onFrac, origin = "") {
   const { Filesystem, Directory } = await import("@capacitor/filesystem");
   const rel = `Incoming/yt-${id}-${Date.now().toString(36)}.m4a`;
+  const headers = origin ? { "User-Agent": ua, Origin: origin, Referer: origin + "/" } : { "User-Agent": ua };
+  const drop = async () => { try { await Filesystem.deleteFile({ path: rel, directory: Directory.Library }); } catch {} };
+  const sizeOf = async () => { try { return (await Filesystem.stat({ path: rel, directory: Directory.Library })).size || 0; } catch { return 0; } };
+  const ok = (got) => got >= 20000 && !(size && got < size * 0.9);
   let sub = null;
   try { sub = await Filesystem.addListener("progress", (p) => { if (p.contentLength > 0) onFrac?.(p.bytes / p.contentLength, p.bytes, p.contentLength); }); } catch {}
+  let firstErr = "";
   try {
-    const full = size ? `${url}&range=0-${size - 1}` : url;
-    const r = await timed(Filesystem.downloadFile({ url: full, path: rel, directory: Directory.Library, headers: origin ? { "User-Agent": ua, Origin: origin, Referer: origin + "/" } : { "User-Agent": ua }, recursive: true, progress: true }), 300000, "Downloading");
-    let got = 0;
-    try { got = (await Filesystem.stat({ path: rel, directory: Directory.Library })).size || 0; } catch {}
-    diag.log(`YouTube: download finished · ${Math.round(got / 1024)} KB${r?.status ? " · HTTP " + r.status : ""}`);
-    if (got < 20000 || (size && got < size * 0.9)) {
-      try { await Filesystem.deleteFile({ path: rel, directory: Directory.Library }); } catch {}
-      throw new Error(`download refused (${got} bytes)`);
+    try {                                                      // 1) the whole file in one go
+      const full = size ? `${url}&range=0-${size - 1}` : url;
+      const r = await timed(Filesystem.downloadFile({ url: full, path: rel, directory: Directory.Library, headers, recursive: true, progress: true }), 300000, "Downloading");
+      const got = await sizeOf();
+      diag.log(`YouTube: download finished · ${Math.round(got / 1024)} KB${r?.status ? " · HTTP " + r.status : ""}`);
+      if (ok(got)) return { rel, size: got };
+      firstErr = `refused (${got} bytes)`;
+    } catch (e) { firstErr = String(e.message || e).replace(/https?:\/\/\S+/g, "(address)"); }
+    await drop();
+    diag.log(`YouTube: one-piece download failed (${firstErr}); trying it in pieces`);
+    if (!size) throw new Error(firstErr);
+    // 2) small pieces through the app's own networking: each one is a short, ordinary request
+    const PIECE = 512 * 1024;
+    let off = 0, status = 0;
+    while (off < size) {
+      const end = Math.min(size - 1, off + PIECE - 1);
+      let r = null, last = "";
+      for (let tryN = 0; tryN < 3 && !r; tryN++) {
+        try {
+          const x = await timed(CapacitorHttp.get({ url: `${url}&range=${off}-${end}`, headers, responseType: "blob", connectTimeout: 20000, readTimeout: 60000 }), 90000, "Downloading");
+          status = x.status;
+          if ((x.status === 200 || x.status === 206) && x.data && x.data.length > 100) r = x; else last = `HTTP ${x.status}`;
+        } catch (e) { last = String(e.message || e).replace(/https?:\/\/\S+/g, "(address)"); }
+        if (!r) await new Promise((res) => setTimeout(res, 400 * (tryN + 1)));
+      }
+      if (!r) { diag.log(`YouTube: piece ${off}-${end} refused (${last})`); await drop(); throw new Error(`YouTube refused the audio (${last || firstErr})`); }
+      if (off === 0) await Filesystem.writeFile({ path: rel, directory: Directory.Library, data: r.data, recursive: true });
+      else await Filesystem.appendFile({ path: rel, directory: Directory.Library, data: r.data });
+      off = end + 1;
+      onFrac?.(off / size, off, size);
     }
+    const got = await sizeOf();
+    diag.log(`YouTube: pieces finished · ${Math.round(got / 1024)} KB · HTTP ${status}`);
+    if (!ok(got)) { await drop(); throw new Error(`download refused (${got} bytes)`); }
     return { rel, size: got };
   } finally { try { await sub?.remove(); } catch {} }
 }
