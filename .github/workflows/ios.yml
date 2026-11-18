@@ -75,7 +75,7 @@ jobs:
           cp Strata-Music.ipa AuraOS-Music.ipa
           if gh release view app >/dev/null 2>&1; then
             gh release upload app Strata-Music.ipa AuraOS-Music.ipa --clobber
-            gh release edit app --notes "$notes" --latest
+            gh release edit app --title "Strata Music for iPhone" --notes "$notes" --latest
           else
             gh release create app Strata-Music.ipa AuraOS-Music.ipa --title "Strata Music for iPhone" --notes "$notes" --latest
           fi
