@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.1.2",
+    "name": "The Search Update",
+    "date": "2026-11-18",
+    "notes": [
+      "Fixed Check for Updates showing nothing: it now says Checking… and then tells you the result"
+    ]
+  },
+  {
     "version": "1.1.1",
     "name": "The Search Update",
     "date": "2026-11-18",

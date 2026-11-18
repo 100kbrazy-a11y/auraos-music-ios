@@ -1002,7 +1002,7 @@ function settingsModel(sizeText) {
       { id: "motion", type: "toggle", symbol: "sparkles", title: "Motion Effects", value: motion() },
     ] },
     { title: "About", footer: "Strata Music for iPhone · music packs work with the desktop and Android apps too", rows: [
-      { id: "update", type: "action", symbol: "arrow.down.circle", title: "Check for Updates", detail: `${upd.current.version}`, stay: true },
+      { id: "update", type: "action", symbol: "arrow.down.circle", title: "Check for Updates", detail: updState || upd.current.version, stay: true },
       { id: "whatsnew", type: "action", symbol: "sparkle", title: "What's New", detail: upd.current.name, stay: true },
       { id: "diag", type: "action", symbol: "info.circle", title: "Diagnostics" },
     ] },
@@ -1582,21 +1582,25 @@ async function importAudio(files) {
 }
 
 // ---- updates: look on GitHub, show what's new, hand the new build to SideStore
-let checking = false;
+let checking = false, updState = "";
+// (Settings is a native screen on top of the app, so a toast behind it would never be seen: results here are alerts, and the row says "Checking…")
 async function checkForUpdates(manual) {
   if (checking) return;
   checking = true;
+  if (manual) { updState = "Checking…"; if (nc.on) nc.settings(settingsModel()); }
+  const say = (title, msg) => (nc.on ? confirmBox(title, msg, "OK") : (snack(`${title}${msg ? " · " + msg : ""}`), null));
   try {
-    if (manual) snack("Checking for updates…", null, null, 2200);
     const { latest, news } = await upd.check();
-    if (!news.length) { if (manual) snack(`You're up to date · ${upd.current.name} ${upd.current.version}`); return; }
+    updState = ""; if (manual && nc.on) nc.settings(settingsModel());
+    if (!news.length) { if (manual) say("You're up to date", `${upd.current.name} · ${upd.current.version}`); return; }
     const text = news.map(upd.notesText).join("\n\n");
     if (!manual) { snack(`Update available: ${latest.name}`, "View", () => checkForUpdates(true), 9000); return; }
     const go = await confirmBox(`Update available — ${latest.name}`, `${text}\n\nInstalling opens SideStore, which updates the app in place. Your music, playlists and settings stay.`, "Install");
     if (go) upd.install();
   } catch (e) {
     diag.log("Update: " + (e.message || e));
-    if (manual) snack("Couldn't check for updates: " + (e.message || e), "Details", showDiagnostics, 8000);
+    updState = ""; if (manual && nc.on) nc.settings(settingsModel());
+    if (manual) say("Couldn't check for updates", String(e.message || e));
   } finally { checking = false; }
 }
 async function showWhatsNew() {
