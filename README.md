@@ -6,7 +6,7 @@
 
 **A music player for the songs you own, in real Liquid Glass for iOS 26.**
 
-[**How to install**](#install-in-4-steps)
+[**How to install**](#install-on-your-iphone)
 &nbsp;·&nbsp; [⬇ Latest .ipa](https://github.com/100kbrazy-a11y/auraos-music-ios/releases/latest/download/Strata-Music.ipa)
 &nbsp;·&nbsp; [Features](#features)
 &nbsp;·&nbsp; [Android version](https://github.com/100kbrazy-a11y/auraos-music-android)
@@ -15,41 +15,136 @@
 
 </div>
 
-## Install in 4 steps
+## Install on your iPhone
 
-No App Store and no paid developer account: **SideStore** installs the app with your own Apple ID, like a real app.
+No App Store listing and no paid developer account. **SideStore** installs the app with your own free Apple ID, and
+you can set the whole thing up **on the iPhone itself, with no computer**, using SideInstaller.
 
-![Install on iPhone in 4 steps](docs/images/install.jpg)
+![Install Strata Music on iPhone: the whole thing in 3 parts](docs/images/guide-overview.png)
 
-1. **Get SideStore on your iPhone (one time).** On a computer (Linux, Mac or Windows) run
-   [**iloader**](https://github.com/nab138/iloader), plug in your iPhone, sign in with your Apple ID and install
-   SideStore. On Fedora, `./build-ios.sh` (below) installs iloader for you.
-2. **Turn on Developer Mode.** On the iPhone: **Settings › Privacy & Security › Developer Mode**, switch it on,
-   restart and confirm.
-3. **Install Strata Music.** On the iPhone, open this link in Safari (or put it in a Shortcut's **Open URLs** action):
+> The pictures in this guide are **illustrations** of each step, not screenshots. Screens in Open Minis, SideStore
+> and iOS can look a little different on your phone and change between versions.
 
-   ```
-   sidestore://install?url=https://github.com/100kbrazy-a11y/auraos-music-ios/releases/latest/download/Strata-Music.ipa
-   ```
+**What you need**
 
-   SideStore downloads the newest build and installs it.
-4. **Open it and keep it fresh.** With a free Apple ID, apps last 7 days. Open SideStore and tap **Refresh** at
-   least once a week. Your library is kept.
+| | |
+|---|---|
+| iPhone | **iOS 27 or newer** for the on-device method below (older iOS: see [Using a computer instead](#using-a-computer-instead)) |
+| Internet | Wi-Fi, for the setup |
+| Apple ID | A free one is fine. It signs the apps for your own iPhone |
+| Apps (free, App Store) | **Open Minis** (version 1.16 or newer) and **LocalDevVPN** |
 
-**Updating:** open the same link again (or run the Shortcut). The new build installs over the old one and your
-music, playlists and settings stay.
+### Part 1: Get the apps
+
+![Part 1: get the apps](docs/images/guide-1-apps.png)
+
+1. Install **Open Minis** and **LocalDevVPN** from the App Store.
+2. Turn on **Developer Mode**: **Settings › Privacy & Security › Developer Mode**, switch it on, let the iPhone
+   restart, then tap **Turn On** and enter your passcode. If Developer Mode isn't in Settings yet, see
+   [Troubleshooting](#troubleshooting).
+3. Open **LocalDevVPN** and tap **Connect**. Allow the VPN configuration when iOS asks. **Keep it connected**
+   whenever you install, update or refresh an app. SideStore uses it to talk to your own iPhone.
+
+### Part 2: Set up SideStore
+
+![Part 2: set up SideStore](docs/images/guide-2-sidestore.png)
+
+1. In **Open Minis**, tap the **console icon** (top right) and choose **Shell Terminal**. Keep LocalDevVPN connected.
+2. Open the SideInstaller page, [**sideinstaller.net/install.html**](https://sideinstaller.net/install.html), tick
+   the terms box and tap **Copy** on the command. Paste it into the terminal and press return. (It's their command,
+   so copy it from their page and it stays current.)
+3. Follow the **siboot** instructions that appear on screen. siboot signs SideInstaller with your Apple Account,
+   which then installs **SideStore**.
+4. Open **SideStore** and sign in with your Apple ID. If iOS asks, trust the profile in
+   **Settings › General › VPN & Device Management**.
+
+> **Good to know:** SideInstaller, Open Minis and siboot are made by other people, not by this project. The command
+> downloads and runs a script from their GitHub repo, and siboot handles your Apple Account sign-in. Only continue
+> if you're comfortable with that, and read their page first. If you'd rather not, use
+> [a computer instead](#using-a-computer-instead).
+
+### Part 3: Install Strata Music
+
+![Part 3: install Strata Music](docs/images/guide-3-install.png)
+
+With LocalDevVPN connected, open this link on the iPhone (in Safari, or scan the QR code below with the camera, or
+put it in a Shortcut's **Open URLs** action):
+
+```
+sidestore://install?url=https://github.com/100kbrazy-a11y/auraos-music-ios/releases/latest/download/Strata-Music.ipa
+```
+
+SideStore downloads the newest build and installs it. It takes about a minute, then Strata Music is on your Home
+Screen.
+
+![Scan to install Strata Music](docs/images/guide-qr.png)
+
+## Keeping it fresh
+
+![Keeping it up to date](docs/images/guide-4-update.png)
+
+- **Refresh weekly.** A free Apple ID signs apps for **7 days**. Connect LocalDevVPN, open SideStore and tap the
+  green **7 DAYS** counter in **My Apps**. SideStore can also refresh in the background, but don't count on it.
+- **Free account limits:** 3 active apps at a time, and 10 new App IDs per 7 days.
+- **Updating Strata Music:** in the app go to **Settings › About › Check for Updates** (version 1.1 and newer). It
+  shows what's new, and **Install** opens SideStore to do the update. Or just open the install link again.
+  Your music, playlists and settings stay.
+
+## Troubleshooting
 
 <details>
-<summary><b>Trouble installing?</b></summary>
+<summary><b>Developer Mode isn't in Settings</b></summary>
 
-- **"Developer error 7252" / certificate errors in SideStore:** in SideStore go to Settings, sign out, sign back
-  in, then try again. Re-run iloader if it keeps happening.
-- **Sign-in error -80045 in SideStore:** Apple turned the sign-in down. Wait a little and try again, and check
-  that you can sign in to the same Apple ID at appleid.apple.com.
-- **"Untrusted developer":** Settings › General › VPN & Device Management › trust your Apple ID.
-- **App won't open after a week:** refresh it in SideStore (free Apple IDs expire apps after 7 days).
-
+On some phones the switch doesn't appear until something has been sideloaded. The SideInstaller page has a one-line variant of the
+command that turns it on (it adds `-s developer-mode`). Use the exact command shown there.
 </details>
+
+<details>
+<summary><b>Install or refresh does nothing, or fails</b></summary>
+
+Open **LocalDevVPN** and make sure it says **Connected**, then try again. It has to stay on for the whole install
+or refresh.
+</details>
+
+<details>
+<summary><b>Sign-in error -80045 in SideStore</b></summary>
+
+Apple's sign-in was turned down. Wait a bit and retry, and check you can sign in to the same Apple ID at
+appleid.apple.com. In SideStore settings you can also try turning off **On-Device Anisette**, picking the
+**SideStore (New)** server, and turning off **Auto Rotation**, or use SideStore's Nightly build.
+</details>
+
+<details>
+<summary><b>"Developer error 7252" / certificate errors</b></summary>
+
+In SideStore go to Settings, sign out, sign back in, then try again.
+</details>
+
+<details>
+<summary><b>"Untrusted developer"</b></summary>
+
+**Settings › General › VPN & Device Management**, then trust your Apple ID.
+</details>
+
+<details>
+<summary><b>The app won't open after a week</b></summary>
+
+It expired. Connect LocalDevVPN and refresh it in SideStore. Your library is kept.
+</details>
+
+<details>
+<summary><b>"Check for Updates" says I'm up to date but there's a new build</b></summary>
+
+Wait a few minutes after a release (the build takes a while), then check again.
+</details>
+
+### Using a computer instead
+
+On iOS below 27, or if you'd rather not run a terminal command on the phone: on a computer (Linux, Mac or Windows)
+run [**iloader**](https://github.com/nab138/iloader), plug in your iPhone, sign in with your Apple ID and install
+SideStore. Then turn on Developer Mode, connect LocalDevVPN and continue from
+[Part 3](#part-3-install-strata-music). On Fedora, `./build-ios.sh` (below) installs iloader for you.
+
 
 ## Features
 
