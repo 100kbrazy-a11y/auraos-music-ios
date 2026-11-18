@@ -512,6 +512,7 @@ final class SettingsScreen: UITableViewController {
         super.viewDidLoad()
         title = "Settings"
         navigationItem.largeTitleDisplayMode = .always
+        tableView.sectionHeaderTopPadding = 8
     }
 
     func rows(_ s: Int) -> [[String: Any]] { (sections[s]["rows"] as? [[String: Any]]) ?? [] }
@@ -533,6 +534,14 @@ final class SettingsScreen: UITableViewController {
         cfg.secondaryText = r["subtitle"] as? String
         cfg.secondaryTextProperties.color = .secondaryLabel
         cfg.secondaryTextProperties.numberOfLines = 0
+        cfg.textToSecondaryTextVerticalPadding = 1
+        // a short value on the right ("Signed in", "1.1.0") instead of a second line: keeps the rows tight
+        if let detail = r["detail"] as? String, r["subtitle"] == nil {
+            cfg = UIListContentConfiguration.valueCell()
+            cfg.text = r["title"] as? String
+            cfg.secondaryText = detail
+            cfg.secondaryTextProperties.color = .secondaryLabel
+        }
         if let sym = r["symbol"] as? String { cfg.image = UIImage(systemName: sym); cfg.imageProperties.tintColor = tint }
         if (r["destructive"] as? Bool) ?? false { cfg.textProperties.color = .systemRed; cfg.imageProperties.tintColor = .systemRed }
         cell.selectionStyle = type == "action" ? .default : .none

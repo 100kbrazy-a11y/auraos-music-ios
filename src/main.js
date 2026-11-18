@@ -8,6 +8,7 @@ import { persistStorage, usage } from "./store.js";
 import { squareJpeg, coverColor } from "./tags.js";
 import { idb } from "./store.js";
 import { diag } from "./diag.js";
+import * as upd from "./update.js";
 import { DiskFile, dropPicked, initLibraryURL, songFileURLNow } from "./files.js";
 import { nc, symbolFor } from "./native-chrome.js";
 import { search as searchOnline, details as resultDetails, bestSongMatch, bestAlbumMatch, same } from "./lookup.js";
@@ -679,6 +680,7 @@ function render(p) {
     case "playlist": return pagePlaylist(p.name);
     case "settings": return pageSettings();
     case "search": return pageSearch(p);
+    case "ytsearch": return pageYtSearch(p);
   }
 }
 
@@ -976,32 +978,33 @@ function settingsModel(sizeText) {
   const missingGenres = [...lib.songs.values()].filter((x) => !genresOf(x).length).length;
   const eqVals = EQ_PRESETS[s.eq] || EQ_PRESETS.Flat;
   return [
-    { title: "Your Music", rows: [
-      { id: "add", type: "action", symbol: "plus", title: "Add Songs", subtitle: "Pick music files from your phone" },
-      { id: "pack", type: "action", symbol: "shippingbox", title: "Add Music Pack", subtitle: "Add a …-musicpack.zip someone shared with you" },
-      { id: "link", type: "action", symbol: "link", title: "Add from Link (Experimental)", subtitle: "Paste a YouTube or YouTube Music song, album or playlist link" },
-      { id: "ytacct", type: "action", symbol: "person.crop.circle", title: "YouTube Account", subtitle: ytSignedInNow() ? "Signed in · used by Add from Link · tap to sign out" : "Sign in if YouTube asks you to (for Add from Link)" },
-      { id: "covers", type: "action", symbol: "globe", title: "Find Missing Covers", subtitle: "Look up album art online" },
-      { id: "genres", type: "action", symbol: "magnifyingglass", title: "Find Genres", subtitle: missingGenres ? `Look up genres online for ${plural(missingGenres, "song")} that don't have one` : "Every song has a genre" },
-      { id: "autofill", type: "toggle", symbol: "wand.and.stars", title: "Fill In Song Info Automatically", subtitle: "When you add songs, look up missing albums, years, genres and covers", value: s.autofill !== false },
+    { title: "Add Music", rows: [
+      { id: "add", type: "action", symbol: "plus", title: "Songs from Files" },
+      { id: "pack", type: "action", symbol: "shippingbox", title: "Music Pack" },
+      { id: "ytsearch", type: "action", symbol: "magnifyingglass", title: "Search YouTube Music", subtitle: "Songs, albums, playlists, artists" },
+      { id: "link", type: "action", symbol: "link", title: "From a Link", subtitle: "YouTube or YouTube Music" },
+    ] },
+    { title: "Library", rows: [
       { id: "library", type: "info", symbol: "folder", title: "Library", subtitle: sizeText || `${plural(lib.songs.size, "song")} · ${plural(lib.albums.length, "album")}` },
-      { id: "diag", type: "action", symbol: "info.circle", title: "Diagnostics", subtitle: "What the app did recently, for troubleshooting" },
+      { id: "covers", type: "action", symbol: "globe", title: "Find Missing Covers" },
+      { id: "genres", type: "action", symbol: "tag", title: "Find Genres", detail: missingGenres ? `${missingGenres} missing` : "All set" },
+      { id: "autofill", type: "toggle", symbol: "wand.and.stars", title: "Fill In Song Info", subtitle: "Look up albums, years, genres and covers for new songs", value: s.autofill !== false },
+      { id: "ytacct", type: "action", symbol: "person.crop.circle", title: "YouTube Account", detail: ytSignedInNow() ? "Signed in" : "Not signed in" },
+      { id: "removeAll", type: "action", symbol: "trash", title: "Remove All Music", destructive: true, stay: true },
     ] },
-    { title: "Playback", rows: [
-      { id: "crossfade", type: "slider", symbol: "list.bullet", title: "Crossfade", subtitle: "Blend the end of each song into the next", min: 0, max: 12, value: +s.crossfade || 0, unit: "s", zero: "Off" },
-      { id: "lyricReturn", type: "choice", symbol: "quote.bubble", title: "Scroll Timers", subtitle: "After you stop scrolling, lyrics glide back to the current line and the player comes back (sideways) after",
+    { title: "Playback & Look", rows: [
+      { id: "crossfade", type: "slider", symbol: "waveform", title: "Crossfade", min: 0, max: 12, value: +s.crossfade || 0, unit: "s", zero: "Off" },
+      { id: "lyricReturn", type: "choice", symbol: "quote.bubble", title: "Scroll Timers", subtitle: "Lyrics and player return after you stop scrolling",
         value: +s.lyricReturn || 1.5, options: [1, 1.5, 2, 3, 5, 10].map((v) => ({ label: `${v}s`, value: v })) },
-      { id: "tuckPinned", type: "toggle", symbol: "rectangle.bottomhalf.inset.filled", title: "Keep Media Bar Tucked", subtitle: "Sideways: keep the media bar tucked under the tabs as just the album cover", value: !!s.tuckPinned },
-    ] },
-    { title: "Equalizer", rows: [
       { id: "eqgraph", type: "eq", values: eqVals, labels: EQ_BANDS.map((f) => (f >= 1000 ? f / 1000 + "k" : String(f))) },
-      { id: "eq", type: "menu", symbol: "slider.horizontal.3", title: "Preset", value: s.eq && EQ_PRESETS[s.eq] ? s.eq : "Flat", options: Object.keys(EQ_PRESETS) },
+      { id: "eq", type: "menu", symbol: "slider.horizontal.3", title: "Equalizer", value: s.eq && EQ_PRESETS[s.eq] ? s.eq : "Flat", options: Object.keys(EQ_PRESETS) },
+      { id: "tuckPinned", type: "toggle", symbol: "rectangle.bottomhalf.inset.filled", title: "Keep Media Bar Tucked", subtitle: "Sideways only", value: !!s.tuckPinned },
+      { id: "motion", type: "toggle", symbol: "sparkles", title: "Motion Effects", value: motion() },
     ] },
-    { title: "Look & Feel", rows: [
-      { id: "motion", type: "toggle", symbol: "sparkles", title: "Motion Effects", subtitle: "Sliding pages, glow, living background", value: motion() },
-    ] },
-    { title: "Storage", footer: "Strata Music for iPhone · music packs work with the desktop and Android apps too", rows: [
-      { id: "removeAll", type: "action", symbol: "trash", title: "Remove All Music", subtitle: "Deletes the songs stored in this app", destructive: true, stay: true },
+    { title: "About", footer: "Strata Music for iPhone · music packs work with the desktop and Android apps too", rows: [
+      { id: "update", type: "action", symbol: "arrow.down.circle", title: "Check for Updates", detail: `${current.version}`, stay: true },
+      { id: "whatsnew", type: "action", symbol: "sparkle", title: "What's New", detail: current.name, stay: true },
+      { id: "diag", type: "action", symbol: "info.circle", title: "Diagnostics" },
     ] },
   ];
 }
@@ -1023,6 +1026,9 @@ async function settingAction(id) {
   if (id === "add") pickSongs();
   else if (id === "pack") pickPacks();
   else if (id === "link") addFromLink();
+  else if (id === "ytsearch") push({ type: "ytsearch", q: "" });
+  else if (id === "update") checkForUpdates(true);
+  else if (id === "whatsnew") showWhatsNew();
   else if (id === "ytacct") youtubeAccount();
   else if (id === "covers") findCovers(true);
   else if (id === "genres") findGenres();
@@ -1046,7 +1052,8 @@ function pageSettings() {
   const libGroup = h("div", { class: "group" }, h("h4", {}, "Your Music"),
     item("add", "Add Songs", "Pick music files from your phone", pickSongs),
     item("pack", "Add Music Pack", "Add a …-musicpack.zip someone shared with you", pickPacks),
-    item("globe", "Add from Link (Experimental)", "Paste a YouTube or YouTube Music song, album or playlist link", addFromLink),
+    item("search", "Search YouTube Music", "Songs, albums, playlists and artists", () => push({ type: "ytsearch", q: "" })),
+    item("globe", "Add from Link (Experimental)", "Paste a YouTube or YouTube Music song, album, playlist or artist link", addFromLink),
     item("artist", "YouTube Account", ytSignedInNow() ? "Signed in · tap to sign out" : "Sign in if YouTube asks you to (for Add from Link)", () => youtubeAccount()),
     item("globe", "Find Missing Covers", "Look up album art online", () => findCovers(true)),
     item("search", "Find Genres", (() => { const n = [...lib.songs.values()].filter((x) => !genresOf(x).length).length; return n ? `Look up genres online for ${plural(n, "song")} that don't have one` : "Every song has a genre"; })(), () => findGenres()));
@@ -1111,7 +1118,10 @@ function pageSettings() {
         player.pause(); await lib.removeSongs([...lib.songs.keys()]); player.queue = []; player.index = -1; updateMini(); refresh(); snack("Removed all music");
       }
     }));
-  p.append(libGroup, playGroup, eqGroup, look, danger, h("div", { class: "empty", style: { padding: "10px 30px 40px", fontSize: "12px" } }, "Strata Music for iPhone · music packs work with the desktop app too"));
+  const about = h("div", { class: "group" }, h("h4", {}, "About"),
+    item("info", "Check for Updates", `${upd.current.name} · ${upd.current.version}`, () => checkForUpdates(true)),
+    item("spark", "What's New", upd.current.name, showWhatsNew));
+  p.append(libGroup, playGroup, eqGroup, look, danger, about, h("div", { class: "empty", style: { padding: "10px 30px 40px", fontSize: "12px" } }, "Strata Music for iPhone · music packs work with the desktop app too"));
   return p;
 }
 
@@ -1571,6 +1581,28 @@ async function importAudio(files) {
   refresh();
 }
 
+// ---- updates: look on GitHub, show what's new, hand the new build to SideStore
+let checking = false;
+async function checkForUpdates(manual) {
+  if (checking) return;
+  checking = true;
+  try {
+    if (manual) snack("Checking for updates…", null, null, 2200);
+    const { latest, news } = await upd.check();
+    if (!news.length) { if (manual) snack(`You're up to date · ${upd.current.name} ${upd.current.version}`); return; }
+    const text = news.map(upd.notesText).join("\n\n");
+    if (!manual) { snack(`Update available: ${latest.name}`, "View", () => checkForUpdates(true), 9000); return; }
+    const go = await confirmBox(`Update available — ${latest.name}`, `${text}\n\nInstalling opens SideStore, which updates the app in place. Your music, playlists and settings stay.`, "Install");
+    if (go) upd.install();
+  } catch (e) {
+    diag.log("Update: " + (e.message || e));
+    if (manual) snack("Couldn't check for updates: " + (e.message || e), "Details", showDiagnostics, 8000);
+  } finally { checking = false; }
+}
+async function showWhatsNew() {
+  await confirmBox(`${upd.current.name} · ${upd.current.version}`, (upd.current.notes || []).map((n) => `• ${n}`).join("\n"), "Done");
+}
+
 // ---- YouTube sign-in for Add from Link (the "enter a code at google.com/device" kind, like a TV)
 const ytSignedInNow = () => { try { return !!localStorage.getItem("auraos-yt-oauth"); } catch { return false; } };
 let ytSigningIn = false;
@@ -1613,10 +1645,12 @@ async function youtubeAccount() {
 let linkBusy = false;
 async function addFromLink() {
   if (linkBusy) return snack("Already adding from a link…");
-  const text = await prompt("Add from Link", "Paste a YouTube or YouTube Music link to a song, album or playlist. Experimental: YouTube sometimes blocks this.", "", "", "Add");
+  const text = await prompt("Add from Link", "Paste a YouTube or YouTube Music link to a song, album, playlist or artist. Experimental: YouTube sometimes blocks this.", "", "", "Add");
   if (!text) return;
   const yt = await import("./youtube.js");
-  if (!yt.parseLink(text)) { snack("That isn't a YouTube or YouTube Music link"); return; }
+  const parsed = yt.parseLink(text);
+  if (!parsed) { snack("That isn't a YouTube or YouTube Music link"); return; }
+  if (yt.isArtistLink(parsed)) return addArtist(yt, parsed);
   linkBusy = true;
   const pb = progressBox("Adding from YouTube");
   try {
@@ -1637,6 +1671,213 @@ async function addFromLink() {
     linkBusy = false;
     refresh();
   }
+}
+
+/** pick one of several options (the system's own menu on iPhone); resolves to the option's value, or null if dismissed */
+function chooseFrom(head, options) {
+  return new Promise((res) => {
+    actionSheet(head, options.map((o) => ({ icon: o.icon, label: o.sub ? `${o.label} — ${o.sub}` : o.label, run: () => res(o.value) })));
+    if (!nc.on) $("#scrim").onclick = () => { closeSheet(true); res(null); };
+  });
+}
+
+/** an artist link / search result: read the artist's page, ask what to download, then download album by album */
+async function addArtist(yt, link) {
+  if (linkBusy) return snack("Already adding from a link…");
+  linkBusy = true;
+  try {
+    let pb = progressBox("Reading the artist");
+    let a;
+    try { a = await yt.readArtist(link, (t) => pb.set(0, t)); }
+    catch (e) {
+      pb.close();
+      diag.log("YouTube: " + (e.message || e));
+      snack("Couldn't read that artist: " + (e.message || e), "Details", showDiagnostics, 12000);
+      return;
+    }
+    pb.close();
+    const nAlb = a.albums.length, nSin = a.singles.length;
+    const options = [];
+    if (nAlb + nSin) options.push({ value: "all", icon: "album", label: "Albums, singles & EPs", sub: [nAlb && plural(nAlb, "album"), nSin && plural(nSin, "single / EP")].filter(Boolean).join(" · ") });
+    if (nAlb && nSin) options.push({ value: "albums", icon: "album", label: "Albums only", sub: plural(nAlb, "album") });
+    if (a.top.length) options.push({ value: "top", icon: "playlist", label: "Top songs", sub: plural(a.top.length, "song") });
+    if (!options.length) { snack(`Found ${a.name}, but there is nothing to download on that page`); return; }
+    linkBusy = false;                                           // (the menu can sit open: don't block other adds meanwhile)
+    const what = await chooseFrom(h("div", { class: "sh-head" }, art(null, { label: a.name, round: true }), h("div", { class: "meta" }, h("div", { class: "t" }, a.name), h("div", { class: "s" }, "What should I download? Keep the app open while it downloads."))), options);
+    if (!what) return;
+    if (linkBusy) return snack("Already adding from YouTube — wait for it to finish");
+    linkBusy = true;
+    pb = progressBox(`Adding ${a.name}`);
+    try {
+      const r = await yt.importArtist(a, what, lib, (f, t) => pb.set(f, t));
+      pb.close();
+      setTimeout(() => autoFill(r.songs || []), 4600);
+      let msg = r.added || r.skipped ? `Added ${plural(r.added, "song")} by ${a.name}` : `Couldn't download anything by ${a.name}${r.firstError ? ": " + r.firstError : ""}`;
+      if (r.skipped) msg += ` · ${r.skipped} already in your library`;
+      if (r.failed && (r.added || r.skipped)) msg += ` · ${r.failed} couldn't be downloaded (${r.firstError})`;
+      snack(msg, r.added ? "Open" : null, () => push({ type: "artist", name: r.songs?.[0]?.albumartist || a.name }), 10000);
+    } catch (e) {
+      pb.close();
+      diag.log("YouTube: " + (e.message || e));
+      snack("Couldn't add that artist: " + (e.message || e), "Details", showDiagnostics, 12000);
+    }
+  } finally {
+    linkBusy = false;
+    lib.rebuild();
+    refresh();
+  }
+}
+
+// ============================================================ YouTube Music search: find songs / albums / playlists / artists and add them
+const YT_KINDS = [["song", "Songs"], ["album", "Albums"], ["playlist", "Playlists"], ["artist", "Artists"]];
+const ytCache = new Map();                 // "kind|query" → results (so going back doesn't search again)
+const ytJobs = new Map();                  // "kind|id" → { f, text, done, err } while adding
+let ytChain = Promise.resolve();           // single songs are added one after another, in the background
+function pageYtSearch(state) {
+  state.kind ||= "song";
+  const p = pageShell("YouTube Music");
+  const input = h("input", { class: "browse-q", placeholder: "Search YouTube Music", value: state.q || "", enterkeyhint: "search" });
+  const clearBtn = ib("close", () => { input.value = ""; state.q = ""; draw(); input.focus(); }, "clear-q", "Clear");
+  const chips = h("div", { class: "chips yt-chips" });
+  const results = h("div", { class: "yt-results" });
+  const drawChips = () => chips.replaceChildren(...YT_KINDS.map(([k, label]) => h("button", { class: "chip" + (state.kind === k ? " on" : ""),
+    onclick: () => { if (state.kind === k) return; state.kind = k; nc.haptic?.("tick"); drawChips(); draw(); } }, state.kind === k && icon("check"), label)));
+  let seq = 0;
+  const draw = async () => {
+    const q = (state.q = input.value).trim();
+    clearBtn.style.visibility = q ? "visible" : "hidden";
+    if (!q) {
+      results.replaceChildren(h("div", { class: "empty" }, h("div", { class: "big" }, icon("search")), h("h3", {}, "Add music from YouTube Music"),
+        h("div", {}, "Search for a song, album, playlist or artist, pick a filter, and tap + to add it to your library. Experimental: YouTube sometimes blocks this. Only add music you have the right to.")));
+      return;
+    }
+    const key = state.kind + "|" + q.toLowerCase();
+    const my = ++seq;
+    let list = ytCache.get(key);
+    if (!list) {
+      results.replaceChildren(...Array.from({ length: 7 }, (_, i) => h("div", { class: "yt-skel" }, h("div", { class: "a skel", style: state.kind === "artist" ? { borderRadius: "50%" } : {} }),
+        h("div", { style: { flex: "1" } }, h("div", { class: "l skel", style: { width: `${62 - (i % 3) * 12}%` } }), h("div", { class: "l skel", style: { width: `${38 - (i % 2) * 10}%`, opacity: ".7" } })))));
+      try {
+        const yt = await import("./youtube.js");
+        list = await yt.searchMusic(q, state.kind);
+        ytCache.set(key, list);
+      } catch (e) {
+        if (my !== seq) return;
+        diag.log("YouTube search: " + (e.message || e));
+        results.replaceChildren(h("div", { class: "empty" }, h("h3", {}, "Couldn't search YouTube Music"), h("div", {}, String(e.message || e)),
+          h("div", { class: "acts" }, h("button", { class: "btn tonal", onclick: draw }, "Try again"))));
+        return;
+      }
+    }
+    if (my !== seq) return;
+    results.replaceChildren(...(list.length ? list.map((it) => ytRow(it)) : [h("div", { class: "empty" }, `Nothing on YouTube Music for “${q}”`)]));
+  };
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { input.blur(); addRecent(input.value); draw(); } });
+  let t = 0;
+  input.addEventListener("input", () => { clearTimeout(t); clearBtn.style.visibility = input.value ? "visible" : "hidden"; t = setTimeout(draw, 650); });
+  drawChips();
+  p.append(h("div", { class: "search" }, icon("search"), input, clearBtn), chips, results);
+  draw();
+  if (!state.q) setTimeout(() => input.focus(), 350);
+  return p;
+}
+
+/** a result row: picture, title, what it is, and a + that turns into progress and then a tick */
+function ytRow(it) {
+  const jobKey = it.kind + "|" + it.id;
+  const pic = h("div", { class: "art" + (it.kind === "artist" ? " round" : "") + (it.thumb ? "" : " loaded") }, it.thumb
+    ? h("img", { src: it.thumb, loading: "lazy", decoding: "async", alt: "", referrerpolicy: "no-referrer", onload: (e) => e.target.parentNode?.classList.add("loaded"), onerror: (e) => e.target.parentNode?.classList.add("loaded") })
+    : icon("note"));
+  const have = it.kind === "song" && lib.findSame({ title: it.title, artist: it.artist, duration: it.duration, id: it.id });
+  const btn = h("button", { class: "ib yt-add", "aria-label": "Add" });
+  const ring = h("span", { class: "yt-ring" });
+  const sub = h("div", { class: "s" }, it.sub || "");
+  const r = h("div", { class: "row yt-row" }, pic, h("div", { class: "meta" }, h("div", { class: "t" }, it.title), sub), btn);
+  const show = () => {
+    const j = ytJobs.get(jobKey);
+    if (have || j?.done) { btn.replaceChildren(icon("check")); btn.classList.add("done"); btn.disabled = true; if (j?.done && j.text) sub.textContent = j.text; return; }
+    if (j && !j.err) {
+      if (ring.parentNode !== btn) btn.replaceChildren(ring);           // (built once: replacing it every update made it jump)
+      ring.style.setProperty("--f", (Math.round((j.f || 0) * 1000) / 10) + "%");
+      btn.classList.add("busy"); btn.classList.toggle("waiting", !j.f);
+      const t = j.text || "Waiting…"; if (sub.textContent !== t) sub.textContent = t;
+      return;
+    }
+    btn.replaceChildren(icon(it.kind === "artist" ? "chevron" : "add")); btn.classList.remove("busy", "done");
+    if (it.kind === "artist") btn.firstChild.style.transform = "rotate(-90deg)";
+    if (j?.err) sub.textContent = "Couldn't add: " + j.err;
+  };
+  r._show = show;
+  r.dataset.yt = jobKey;
+  show();
+  const go = () => {
+    if (have || ytJobs.get(jobKey)?.done || (ytJobs.get(jobKey) && !ytJobs.get(jobKey).err)) return;
+    nc.haptic?.("press");
+    ytAdd(it);
+  };
+  btn.onclick = (e) => { e.stopPropagation(); go(); };
+  press(r, go);
+  return r;
+}
+const ytRefreshRows = (key) => document.querySelectorAll(`.yt-row[data-yt="${CSS.escape(key)}"]`).forEach((r) => r._show?.());
+
+async function ytAdd(it) {
+  const yt = await import("./youtube.js");
+  const key = it.kind + "|" + it.id;
+  if (it.kind === "artist") return addArtist(yt, { channel: it.channel || it.id });
+  const job = { f: 0, text: it.kind === "song" ? "Waiting…" : "Starting…" };
+  ytJobs.set(key, job);
+  ytRefreshRows(key);
+  let last = 0;
+  const onP = (f, t, s2) => {
+    job.f = Math.max(job.f, Math.min(1, (it.kind === "song" ? s2?.f ?? f : f) || 0));          // only ever forwards
+    job.text = it.kind === "song" ? (s2?.text || t) : t;
+    const now = performance.now(); if (now - last > 150) { last = now; ytRefreshRows(key); }
+  };
+  const finish = (r, label) => {
+    job.done = !!(r.added || r.skipped);
+    if (!job.done) { job.err = r.firstError || "nothing could be downloaded"; ytRefreshRows(key); snack(`Couldn't add ${it.title}: ${job.err}`, "Details", showDiagnostics, 10000); return; }
+    job.text = r.added ? `Added${label ? " · " + label : ""}` : "Already in your library";
+    ytRefreshRows(key);
+    nc.haptic?.("success");
+    setTimeout(() => autoFill(r.songs || []), 4600);
+    lib.rebuild();
+  };
+  const fail = (e) => { job.err = e.message || String(e); diag.log("YouTube: " + job.err); ytRefreshRows(key); snack(`Couldn't add ${it.title}: ${job.err}`, "Details", showDiagnostics, 10000); };
+  if (it.kind === "song") {
+    ytChain = ytChain.then(async () => {
+      try { finish(await yt.importSong({ id: it.id, title: it.title, artist: it.artist, album: it.album, duration: it.duration, thumb: it.thumb }, lib, onP), ""); }
+      catch (e) { fail(e); }
+    });
+    return;
+  }
+  // albums and playlists: the progress card, one at a time with other link downloads
+  if (linkBusy) { ytJobs.delete(key); ytRefreshRows(key); return snack("Already adding from YouTube — wait for it to finish"); }
+  linkBusy = true;
+  const pb = progressBox(`Adding ${it.title}`);
+  try {
+    const r = it.kind === "album"
+      ? await yt.importAlbum(it.id, lib, (f, t, s2) => { pb.set(f, t); onP(f, t, s2); }, {}, { title: it.title, artist: it.artist, year: it.year, thumb: it.thumb })
+      : await yt.importLink(`https://music.youtube.com/playlist?list=${it.id}`, lib, (f, t, s2) => { pb.set(f, t); onP(f, t, s2); });
+    pb.close();
+    finish(r, plural(r.added, "song"));
+    if (r.added || r.skipped) {
+      let msg = `Added ${plural(r.added, "song")}`;
+      if (r.skipped) msg += ` · ${r.skipped} already in your library`;
+      if (r.failed) msg += ` · ${r.failed} couldn't be downloaded`;
+      if (r.playlist) msg += ` and the playlist “${r.playlist}”`;
+      const open = r.playlist ? () => push({ type: "playlist", name: r.playlist }) : () => { const s0 = r.songs?.[0]; if (s0) push({ type: "album", key: albumKey(s0) }); };
+      snack(msg, "Open", open, 8000);
+    }
+  } catch (e) { pb.close(); fail(e); }
+  finally { linkBusy = false; refresh(); }
+}
+
+function ytOffer(q) {
+  const r = h("div", { class: "arow yt-offer" }, h("div", { class: "art add" }, icon("search")),
+    h("div", {}, h("div", { class: "t" }, q ? `Search YouTube Music for “${q}”` : "Search YouTube Music"), h("div", { class: "s" }, "Add songs, albums, playlists or artists you don't have yet")));
+  press(r, () => { if (q) addRecent(q); push({ type: "ytsearch", q: q || "" }); });
+  return r;
 }
 
 // ============================================================ browse: search your library, with recent searches
@@ -1699,6 +1940,7 @@ function browseResults(q, useRecent) {
   if (albums.length) row("Albums", albums.length, albums.slice(0, all ? 400 : 40).map(albumCard));
   if (songs.length) { const list = songs.slice(0, all ? 600 : 100); row("Songs", songs.length, list.map((x, i) => songCard(x, list, i, all ? "Library" : "Search"))); }
   if (!out.length) out.push(h("div", { class: "empty" }, `Nothing in your library matches “${q}”`));
+  if (native) out.unshift(...(q ? [h("div", { class: "section-t" }, "Not in your library?"), ytOffer(q)] : [ytOffer("")]));
   return out;
 }
 
@@ -1837,7 +2079,7 @@ function setupMiniGestures() {
     if (openDrag) {                       // let go: open fully, or (if barely pulled) sink back into the bubble
       openDrag = false;
       morph.v = (upV * 1000) / morph.dist();
-      if (morph.p < 0.72 || upV < -0.5) morph.animate(0, SPRING_OPEN, () => morph.clear());
+      if (morph.p < 0.72 || upV < -0.5) morph.glide(0, () => morph.clear());
       else closeNp({ fromDrag: true });
       return;
     }
@@ -2070,6 +2312,7 @@ function openNp() {
   }
   openNpNow(false);
 }
+let openingT = 0;
 function openNpNow(native) {
   if (!player.current || npOpen) return;
   prepareNp();
@@ -2078,7 +2321,12 @@ function openNpNow(native) {
   if (native) { morph.native = true; morph.active = true; document.documentElement.classList.add("native-morph"); }
   morph.set(1);                                  // start as the bubble…
   morph.v = 0;
-  requestAnimationFrame(() => morph.animate(0, SPRING_OPEN, () => morph.clear()));   // …and grow out of it, overshooting a touch
+  // the controls wait until it has finished opening (else the tap that opened it can land on the growing play button)
+  const npEl = $("#np");
+  npEl.classList.add("opening");
+  clearTimeout(openingT);
+  // two frames to get its layers drawn before anything moves (it looks exactly like the bubble meanwhile), then glide
+  requestAnimationFrame(() => requestAnimationFrame(() => morph.glide(0, () => { morph.clear(); openingT = setTimeout(() => npEl.classList.remove("opening"), 60); })));
 }
 function prepareNp() {
   unflipNow();                                   // always reopen on the artwork, not the details
@@ -2097,6 +2345,19 @@ function prepareNp() {
 
 // ---- the morph between the bubble and the full player. p = 0 is full screen, p = 1 is the bubble.
 // Everything is a function of p, so a finger can hold it at any in-between stage; letting go hands it to a spring.
+// the player opens on one smooth curve (fast start, long gentle landing, no overshoot); closing and letting go still spring
+const GLIDE_MS = 350;
+function bezier(x1, y1, x2, y2) {
+  const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx, cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+  const X = (t) => ((ax * t + bx) * t + cx) * t, Y = (t) => ((ay * t + by) * t + cy) * t, dX = (t) => (3 * ax * t + 2 * bx) * t + cx;
+  return (x) => {
+    if (x <= 0) return 0; if (x >= 1) return 1;
+    let t = x;
+    for (let i = 0; i < 8; i++) { const d = dX(t); if (Math.abs(d) < 1e-6) break; t -= (X(t) - x) / d; t = Math.min(1, Math.max(0, t)); }
+    return Y(t);
+  };
+}
+const GLIDE = bezier(0.2, 0, 0, 1);            // (quick start, long soft landing)
 const SPRING_OPEN = { k: 210, c: 21 }, SPRING_CLOSE = { k: 240, c: 24 }, SPRING_BACK = { k: 260, c: 22 };
 const morph = {
   p: 0, v: 0, rect: null, raf: 0, active: false, nat: null,
@@ -2223,6 +2484,22 @@ const morph = {
     };
     this.raf = requestAnimationFrame(step);
   },
+  /** glide to `to` (0 open, 1 the bubble) on the one curve; a partly-dragged player takes proportionally less time */
+  glide(to, done) {
+    cancelAnimationFrame(this.raf);
+    const from = this.p, dist = Math.abs(to - from);
+    if (dist < 0.002) { this.set(to); this.v = 0; return done?.(0); }
+    const dur = Math.max(140, GLIDE_MS * Math.pow(Math.min(1, dist), 0.6));
+    const t0 = performance.now();
+    const step = (ts) => {
+      const x = Math.min(1, (ts - t0) / dur);
+      this.set(from + (to - from) * GLIDE(x));
+      if (x < 1) { this.raf = requestAnimationFrame(step); return; }
+      this.v = 0;
+      done?.(0);
+    };
+    this.raf = requestAnimationFrame(step);
+  },
   grab() { cancelAnimationFrame(this.raf); this.rect = anchorRect(); this.start = this.p || 0; this.v = 0; npPlayButton(); if (npOpen) this.goNative(true); },
   drag(dy) {                         // dy > 0: towards the bubble
     let p = (this.start || 0) + dy / this.dist();
@@ -2232,7 +2509,7 @@ const morph = {
   release(vPxPerMs) {               // finish whichever way it was going
     this.v = (vPxPerMs * 1000) / this.dist();
     if (this.p > 0.32 || vPxPerMs > 0.5) closeNp({ fromDrag: true });
-    else this.animate(0, SPRING_BACK, () => this.clear());
+    else { nc.haptic("tick"); this.glide(0, () => this.clear()); }
   },
 };
 
@@ -2275,6 +2552,7 @@ function bounceBubble() {
 let pageDirty = false;
 function closeNp(opts = {}) {
   if (!npOpen) return false;
+  clearTimeout(openingT); $("#np").classList.remove("opening");
   npOpen = false;
   if (pageDirty) { pageDirty = false; setTimeout(refresh, 470); }
   const el = $("#np");
@@ -2731,7 +3009,7 @@ async function boot() {
       if (!npOpen || !morph.active) return;
       const v = e.v || 0;
       morph.v = (v * 1000) / morph.dist();
-      if (morph.p < 0.72 || v < -0.5) morph.animate(0, SPRING_OPEN, () => morph.clear());
+      if (morph.p < 0.72 || v < -0.5) morph.glide(0, () => morph.clear());
       else closeNp({ fromDrag: true });
     },
   });
@@ -2772,6 +3050,7 @@ async function boot() {
       App.addListener("backButton", () => { if (!back()) App.minimizeApp(); });
       App.addListener("pause", saveSession);
     } catch {}
+    setTimeout(() => { if (upd.due()) checkForUpdates(false); }, 8000);       // (a quiet check once a day)
 
   }
   window.addEventListener("keydown", (e) => {

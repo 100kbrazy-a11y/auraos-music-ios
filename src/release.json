@@ -1,0 +1,21 @@
+[
+  {
+    "version": "1.1.0",
+    "name": "The Search Update",
+    "date": "2026-11-18",
+    "notes": [
+      "Search YouTube Music right in the app: songs, albums, playlists and artists, with a + that turns into a progress ring and then a tick",
+      "Artists: search for one, or paste an artist link, and download their albums, singles or top songs",
+      "Add from Link now understands artist links too",
+      "The player now opens on one smooth glide, with no bounce",
+      "Settings rebuilt: fewer sections, shorter rows, everything in one tidy list",
+      "Updates inside the app: Settings › About checks for a new version and hands it to SideStore"
+    ]
+  },
+  {
+    "version": "1.0.0",
+    "name": "Strata Music for iPhone",
+    "date": "2026-11-01",
+    "notes": ["The first Strata Music for iPhone build"]
+  }
+]

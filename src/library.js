@@ -128,6 +128,17 @@ class Library extends EventTarget {
     return null;
   }
 
+  /** a song you already have: the same YouTube video, or the same title + artist + length on any release */
+  findSame(t) {
+    const src = t.id ? `watch?v=${t.id}` : "";
+    const n = (x) => String(x || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    for (const s of this.songs.values()) {
+      if (src && String(s.source || "").includes(src)) return s;
+      if (t.title && n(s.title) === n(t.title) && n(s.artist) === n(t.artist) && Math.abs((s.duration || 0) - (t.duration || 0)) < 3) return s;
+    }
+    return null;
+  }
+
   uniqueFile(path) {
     const used = new Set([...this.songs.values()].map((s) => s.file.toLowerCase()));
     if (!used.has(path.toLowerCase())) return path;
