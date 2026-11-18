@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.1.3",
+    "name": "The Search Update",
+    "date": "2026-11-18",
+    "notes": [
+      "Fixed downloads from search being refused: the player check now uses the same source as the Android app"
+    ]
+  },
+  {
     "version": "1.1.2",
     "name": "The Search Update",
     "date": "2026-11-18",

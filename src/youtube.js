@@ -98,20 +98,21 @@ async function poMinter() {
       diag.set("YouTube: running YouTube's player check…");
       // the check (a small program + the script that runs it): from YouTube itself, or else from Google's anti-abuse service
       let program = "", globalName = "", js = "", src = "";
-      try {
-        const ch = await timed(yt.getAttestationChallenge("ENGAGEMENT_TYPE_UNBOUND"), 30000, "Getting YouTube's check");
-        const bg = ch?.bg_challenge;
-        if (!bg) throw new Error("no check in YouTube's answer");
-        program = bg.program; globalName = bg.global_name;
-        src = bg.interpreter_url?.private_do_not_access_or_else_trusted_resource_url_wrapped_value || "";
-        diag.log(`YouTube: check from YouTube (${globalName}, script ${src ? "url" : "missing"})`);
-      } catch (e) {
-        diag.log(`YouTube: YouTube's check unavailable (${e.message || e}); asking Google's service`);
+      try {        // Google's anti-abuse service: the check YouTube's web player uses for these tokens (it must match the key sent below)
         const c = await timed(getChallenge({ requestKey: "O43z0dpjhgX20SCx4KAo", fetchFunction: nativeFetch }), 30000, "Getting Google's check");
         program = c.program; globalName = c.globalName;
         js = c.interpreterJavascript?.privateDoNotAccessOrElseSafeScriptWrappedValue || "";
         src = c.interpreterUrl?.privateDoNotAccessOrElseTrustedResourceUrlWrappedValue || "";
         diag.log(`YouTube: check from Google (${globalName}, script ${js ? "inline" : src ? "url" : "missing"})`);
+        if (!program || !globalName) throw new Error("incomplete");
+      } catch (e) {
+        diag.log(`YouTube: Google's check unavailable (${e.message || e}); asking YouTube`);
+        const ch = await timed(yt.getAttestationChallenge("ENGAGEMENT_TYPE_UNBOUND"), 30000, "Getting YouTube's check");
+        const bg = ch?.bg_challenge;
+        if (!bg) throw new Error("no check in YouTube's answer");
+        program = bg.program; globalName = bg.global_name; js = "";
+        src = bg.interpreter_url?.private_do_not_access_or_else_trusted_resource_url_wrapped_value || "";
+        diag.log(`YouTube: check from YouTube (${globalName}, script ${src ? "url" : "missing"})`);
       }
       if (!js && src) {
         if (src.startsWith("//")) src = "https:" + src;
@@ -132,7 +133,7 @@ async function poMinter() {
       try { arr = JSON.parse(txt); } catch {}
       if (!Array.isArray(arr)) diag.log(`YouTube: unexpected check result (HTTP ${r.status}): ${txt.slice(0, 160)}`);
       const [integrityToken, estimatedTtlSecs, mintRefreshThreshold, websafeFallbackToken] = Array.isArray(arr) ? arr : [];
-      if (!integrityToken) throw new Error(`YouTube didn't accept the check (${r.status})`);
+      if (!integrityToken) { diag.log(`YouTube: check result (HTTP ${r.status}): ${txt.slice(0, 300)}`); throw new Error(`YouTube didn't accept the check (${r.status})`); }
       const m = await WebPoMinter.create({ integrityToken, estimatedTtlSecs, mintRefreshThreshold, websafeFallbackToken }, signal);
       diag.log("YouTube: player check passed");
       setTimeout(() => { minterP = null; }, Math.max(300, (estimatedTtlSecs || 3600) - 300) * 1000);   // renew before it runs out
