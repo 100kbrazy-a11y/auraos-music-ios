@@ -201,7 +201,7 @@ function showDiagnostics() {
   openSheet(h("div", {}, h("h3", {}, "Diagnostics"), h("p", {}, "What the app did recently. Copy it and send it along when something goes wrong."), pre,
     h("div", { class: "btns" },
       h("button", { class: "btn text", onclick: () => { diag.clear(); pre.textContent = "Cleared."; } }, "Clear"),
-      h("button", { class: "btn", onclick: async () => { try { await navigator.clipboard.writeText("AuraOS diagnostics (newest first)\n" + diag.text().split("\n").reverse().join("\n")); snack("Copied"); } catch { snack("Couldn't copy — select the text instead"); } } }, "Copy"))),
+      h("button", { class: "btn", onclick: async () => { try { await navigator.clipboard.writeText("Strata diagnostics (newest first)\n" + diag.text().split("\n").reverse().join("\n")); snack("Copied"); } catch { snack("Couldn't copy — select the text instead"); } } }, "Copy"))),
   { dialog: true });
   setTimeout(() => { pre.scrollTop = pre.scrollHeight; }, 30);
 }
@@ -219,7 +219,7 @@ const favGenres = new Set();
 function buildTabs() {
   const nav = $("#tabs");
   nav.innerHTML = "";
-  nav.append(h("div", { class: "brand" }, h("img", { src: "./icon-192.png", alt: "" }), "AuraOS Music"));
+  nav.append(h("div", { class: "brand" }, h("img", { src: "./icon-192.png", alt: "" }), "Strata Music"));
   nav.append(h("div", { class: "ind" }));
   if (!$("#dock .tviz")) $("#dock").prepend(h("canvas", { class: "tviz" }));
   for (const t of TABS) {
@@ -1000,7 +1000,7 @@ function settingsModel(sizeText) {
     { title: "Look & Feel", rows: [
       { id: "motion", type: "toggle", symbol: "sparkles", title: "Motion Effects", subtitle: "Sliding pages, glow, living background", value: motion() },
     ] },
-    { title: "Storage", footer: "AuraOS Music for iPhone · music packs work with the desktop and Android apps too", rows: [
+    { title: "Storage", footer: "Strata Music for iPhone · music packs work with the desktop and Android apps too", rows: [
       { id: "removeAll", type: "action", symbol: "trash", title: "Remove All Music", subtitle: "Deletes the songs stored in this app", destructive: true, stay: true },
     ] },
   ];
@@ -1111,7 +1111,7 @@ function pageSettings() {
         player.pause(); await lib.removeSongs([...lib.songs.keys()]); player.queue = []; player.index = -1; updateMini(); refresh(); snack("Removed all music");
       }
     }));
-  p.append(libGroup, playGroup, eqGroup, look, danger, h("div", { class: "empty", style: { padding: "10px 30px 40px", fontSize: "12px" } }, "AuraOS Music for Android · music packs work with the desktop app too"));
+  p.append(libGroup, playGroup, eqGroup, look, danger, h("div", { class: "empty", style: { padding: "10px 30px 40px", fontSize: "12px" } }, "Strata Music for iPhone · music packs work with the desktop app too"));
   return p;
 }
 
@@ -1432,7 +1432,7 @@ async function saveFile(blob, name, onProgress) {
   const { Filesystem, Directory } = await import("@capacitor/filesystem");
   try { await Filesystem.requestPermissions(); } catch {}
   const places = ios
-    ? [[Directory.Documents, "", "Files › On My iPhone › AuraOS Music"], [Directory.Cache, "", "this app"]]
+    ? [[Directory.Documents, "", "Files › On My iPhone › Strata Music"], [Directory.Cache, "", "this app"]]
     : [[Directory.ExternalStorage, "Download/", "Downloads"], [Directory.Documents, "", "Documents"], [Directory.Cache, "", "this app"]];
   let lastErr;
   for (const [dir, prefix, where] of places) {

@@ -26,7 +26,7 @@ function setKey(key, v) {
   const entry = `\t<key>${key}</key>\n\t${val(v)}\n`;
   plist = re.test(plist) ? plist.replace(re, entry) : plist.replace(/<\/dict>\s*<\/plist>\s*$/, `${entry}</dict>\n</plist>\n`);
 }
-setKey("CFBundleDisplayName", "AuraOS Music");
+setKey("CFBundleDisplayName", "Strata Music");
 setKey("UIBackgroundModes", ["audio"]);
 setKey("UIFileSharingEnabled", true);
 setKey("LSSupportsOpeningDocumentsInPlace", true);
@@ -35,7 +35,7 @@ setKey("UIViewControllerBasedStatusBarAppearance", true);
 setKey("UIRequiredDeviceCapabilities", ["arm64"]);
 setKey("ITSAppUsesNonExemptEncryption", false);
 setKey("NSAppTransportSecurity", { NSAllowsArbitraryLoads: true, NSAllowsLocalNetworking: true });
-setKey("NSLocalNetworkUsageDescription", "AuraOS Music connects to music servers on your home network, like Navidrome.");
+setKey("NSLocalNetworkUsageDescription", "Strata Music connects to music servers on your home network, like Navidrome.");
 setKey("NSPhotoLibraryUsageDescription", "Choose a picture to use as cover art.");
 fs.writeFileSync(plistPath, plist);
 

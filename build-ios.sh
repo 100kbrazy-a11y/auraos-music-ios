@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# AuraOS Music for iPhone — run this on Fedora. It:
+# Strata Music for iPhone — run this on Fedora. It:
 #   1. installs anything missing (Node.js, git, GitHub CLI, iPhone USB support, a QR-code tool)
 #   2. checks the app builds
 #   3. sends the project to a repo on your GitHub account, where GitHub's free Mac machines compile the iPhone app
 #      (Apple only lets iPhone apps be compiled on a Mac, so this part can't happen on Linux)
-#   4. downloads AuraOS-Music.ipa into your Downloads folder
+#   4. downloads Strata-Music.ipa into your Downloads folder
 #   5. installs iloader, the Linux tool that puts SideStore on your iPhone (only needed once)
 #   6. prints a QR code / link: open it on the iPhone (or put it in a Shortcut) and SideStore installs the app
 #
@@ -12,7 +12,7 @@
 #   ./build-ios.sh --repo NAME      use a different GitHub repo name (default: auraos-music-ios)
 #   ./build-ios.sh --private        make the repo private (the one-tap install link then won't work; see the notes)
 #   ./build-ios.sh --no-iloader     skip installing iloader
-#   ./build-ios.sh --download-only  don't build again, just fetch the latest AuraOS-Music.ipa
+#   ./build-ios.sh --download-only  don't build again, just fetch the latest Strata-Music.ipa
 set -Eeuo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 PROJECT="$PWD"
@@ -32,7 +32,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-IPA_NAME="AuraOS-Music.ipa"
+IPA_NAME="Strata-Music.ipa"
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/auraos-music-ios"
 DOWNLOADS="$(xdg-user-dir DOWNLOAD 2>/dev/null || true)"
 [ -n "$DOWNLOADS" ] && [ "$DOWNLOADS" != "$HOME" ] || DOWNLOADS="$HOME/Downloads"
@@ -105,7 +105,7 @@ note "Signed in as $LOGIN"
 if ! gh repo view "$REPO" >/dev/null 2>&1; then
   [ "$BUILD" = 1 ] || die "There's no $REPO yet — run ./build-ios.sh without --download-only first."
   note "Creating the repo $REPO ($VISIBILITY)…"
-  gh repo create "$REPO" "--$VISIBILITY" --description "AuraOS Music for iPhone (built by GitHub Actions)" >/dev/null
+  gh repo create "$REPO" "--$VISIBILITY" --description "Strata Music for iPhone (built by GitHub Actions)" >/dev/null
 fi
 REPO_VIS="$(gh repo view "$REPO" --json visibility -q .visibility | tr 'A-Z' 'a-z')"
 
@@ -129,7 +129,7 @@ if [ "$BUILD" = 1 ]; then
     git -C "$WORK" push -q origin main 2>/dev/null || true
     gh workflow run ios.yml -R "$REPO" --ref main
   else
-    git -C "$WORK" commit -qm "AuraOS Music for iPhone — $(date '+%Y-%m-%d %H:%M')"
+    git -C "$WORK" commit -qm "Strata Music for iPhone — $(date '+%Y-%m-%d %H:%M')"
     note "Uploading the project…"
     git -C "$WORK" push -q -u origin main
   fi
@@ -158,7 +158,7 @@ if [ -z "$RUN_ID" ]; then
   [ -n "$RUN_ID" ] || die "No finished build yet — run ./build-ios.sh without --download-only."
 fi
 tmp="$(mktemp -d)"
-gh run download "$RUN_ID" -R "$REPO" -n AuraOS-Music-ipa -D "$tmp"
+gh run download "$RUN_ID" -R "$REPO" -n Strata-Music-ipa -D "$tmp"
 mv -f "$tmp/$IPA_NAME" "$DOWNLOADS/$IPA_NAME"; rm -rf "$tmp"
 note "Saved $DOWNLOADS/$IPA_NAME ($(du -h "$DOWNLOADS/$IPA_NAME" | cut -f1))"
 
@@ -188,9 +188,9 @@ fi
 
 # ------------------------------------------------------------------ 7. how to put it on the iPhone
 LINK="sidestore://install?url=https://github.com/$REPO/releases/latest/download/$IPA_NAME"
-GUIDE="$DOWNLOADS/AuraOS-Music-iPhone-setup.txt"
+GUIDE="$DOWNLOADS/Strata-Music-iPhone-setup.txt"
 cat > "$GUIDE" <<TXT
-AuraOS Music on iPhone
+Strata Music on iPhone
 ======================
 
 ONE-TIME SETUP (SideStore)
@@ -203,14 +203,14 @@ ONE-TIME SETUP (SideStore)
 4. Open SideStore and sign in with the same Apple ID.
    After this you don't need the computer any more.
 
-INSTALL AURAOS MUSIC (and update it later the same way)
+INSTALL STRATA MUSIC (and update it later the same way)
 Option A: scan the QR code the script showed with the iPhone camera, then open it in SideStore.
 Option B: make a Shortcut that installs it:
    1. Open Shortcuts and tap +.
    2. Add the action "Open URLs" and paste this as the URL:
       $LINK
-   3. Name it "Install AuraOS Music". Optionally, share it and choose Add to Home Screen.
-   Running it opens SideStore, which downloads and installs AuraOS Music as a real app.
+   3. Name it "Install Strata Music". Optionally, share it and choose Add to Home Screen.
+   Running it opens SideStore, which downloads and installs Strata Music as a real app.
    Run it again after a new build to update; your music and settings stay.
 Option C: send $IPA_NAME to the iPhone (for example AirDrop it from a Mac, or save it to iCloud Drive),
           then share it from the Files app to SideStore.

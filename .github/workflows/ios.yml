@@ -1,7 +1,7 @@
-# Builds AuraOS Music for iPhone on GitHub's Mac machines and publishes AuraOS-Music.ipa.
+# Builds Strata Music for iPhone on GitHub's Mac machines and publishes Strata-Music.ipa.
 # The .ipa is unsigned: SideStore signs it with your Apple ID when it installs it.
 # Download link (stays the same for every build):
-#   https://github.com/<you>/<repo>/releases/latest/download/AuraOS-Music.ipa
+#   https://github.com/<you>/<repo>/releases/latest/download/Strata-Music.ipa
 name: Build iPhone app
 
 on:
@@ -53,27 +53,29 @@ jobs:
             build | grep -E "^(\*\*|error|warning: .*deprecated)|error:" || true
           test -d build/Build/Products/Release-iphoneos/App.app || { echo "::error::The app didn't compile; see the log above"; exit 1; }
 
-      - name: Package AuraOS-Music.ipa
+      - name: Package Strata-Music.ipa
         run: |
           rm -rf Payload && mkdir Payload
           cp -R build/Build/Products/Release-iphoneos/App.app Payload/
-          zip -qry AuraOS-Music.ipa Payload
-          ls -lh AuraOS-Music.ipa
+          zip -qry Strata-Music.ipa Payload
+          ls -lh Strata-Music.ipa
 
       - uses: actions/upload-artifact@v4
         with:
-          name: AuraOS-Music-ipa
-          path: AuraOS-Music.ipa
+          name: Strata-Music-ipa
+          path: Strata-Music.ipa
           retention-days: 14
 
       - name: Publish the download
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes="Build ${{ github.run_number }} ($(git log -1 --format=%h)). Install it with SideStore: open sidestore://install?url=https://github.com/${{ github.repository }}/releases/latest/download/AuraOS-Music.ipa on your iPhone."
+          notes="Build ${{ github.run_number }} ($(git log -1 --format=%h)). Install it with SideStore: open sidestore://install?url=https://github.com/${{ github.repository }}/releases/latest/download/Strata-Music.ipa on your iPhone."
+          # (the same file under the old name too, so the old download link keeps working)
+          cp Strata-Music.ipa AuraOS-Music.ipa
           if gh release view app >/dev/null 2>&1; then
-            gh release upload app AuraOS-Music.ipa --clobber
+            gh release upload app Strata-Music.ipa AuraOS-Music.ipa --clobber
             gh release edit app --notes "$notes" --latest
           else
-            gh release create app AuraOS-Music.ipa --title "AuraOS Music for iPhone" --notes "$notes" --latest
+            gh release create app Strata-Music.ipa AuraOS-Music.ipa --title "Strata Music for iPhone" --notes "$notes" --latest
           fi

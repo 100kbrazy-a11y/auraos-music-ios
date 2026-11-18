@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>AuraOS Music</string>
+	<string>Strata Music</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -65,7 +65,7 @@
 		<true/>
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>AuraOS Music connects to music servers on your home network, like Navidrome.</string>
+	<string>Strata Music connects to music servers on your home network, like Navidrome.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Choose a picture to use as cover art.</string>
 </dict>

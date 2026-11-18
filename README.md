@@ -1,17 +1,17 @@
 <div align="center">
 
-<img src="public/icon-192.png" width="96" alt="AuraOS Music icon">
+<img src="public/icon-192.png" width="96" alt="Strata Music icon">
 
-# AuraOS Music for iPhone
+# Strata Music for iPhone
 
 **A music player for the songs you own, in real Liquid Glass for iOS 26.**
 
 [**How to install**](#install-in-4-steps)
-&nbsp;·&nbsp; [⬇ Latest .ipa](https://github.com/100kbrazy-a11y/auraos-music-ios/releases/latest/download/AuraOS-Music.ipa)
+&nbsp;·&nbsp; [⬇ Latest .ipa](https://github.com/100kbrazy-a11y/auraos-music-ios/releases/latest/download/Strata-Music.ipa)
 &nbsp;·&nbsp; [Features](#features)
 &nbsp;·&nbsp; [Android version](https://github.com/100kbrazy-a11y/auraos-music-android)
 
-![AuraOS Music on iPhone](docs/images/hero.jpg)
+![Strata Music on iPhone](docs/images/hero.jpg)
 
 </div>
 
@@ -26,10 +26,10 @@ No App Store and no paid developer account: **SideStore** installs the app with 
    SideStore. On Fedora, `./build-ios.sh` (below) installs iloader for you.
 2. **Turn on Developer Mode.** On the iPhone: **Settings › Privacy & Security › Developer Mode**, switch it on,
    restart and confirm.
-3. **Install AuraOS Music.** On the iPhone, open this link in Safari (or put it in a Shortcut's **Open URLs** action):
+3. **Install Strata Music.** On the iPhone, open this link in Safari (or put it in a Shortcut's **Open URLs** action):
 
    ```
-   sidestore://install?url=https://github.com/100kbrazy-a11y/auraos-music-ios/releases/latest/download/AuraOS-Music.ipa
+   sidestore://install?url=https://github.com/100kbrazy-a11y/auraos-music-ios/releases/latest/download/Strata-Music.ipa
    ```
 
    SideStore downloads the newest build and installs it.
@@ -84,7 +84,7 @@ music, playlists and settings stay.
 - **Add from Link (experimental):** paste a YouTube or YouTube Music song, album or playlist link. Sign in under
   **Settings › YouTube Account** if YouTube asks. YouTube fights downloaders, so this can stop working. If it
   fails, **Settings › Diagnostics › Copy** shows why. Only add music you have the right to.
-- **Music Packs** you export are saved in Files › On My iPhone › AuraOS Music and work with the Android app too.
+- **Music Packs** you export are saved in Files › On My iPhone › Strata Music and work with the Android app too.
 
 ![Turn it sideways](docs/images/feat_landscape.jpg)
 
@@ -105,9 +105,9 @@ What it does:
 2. Checks that the app builds.
 3. Puts the project in this repo on your GitHub. Apple only allows iPhone apps to be compiled on a Mac, so
    GitHub's free Mac machines build it (`.github/workflows/ios.yml`, about 5–10 minutes).
-4. Downloads **AuraOS-Music.ipa** to your Downloads folder.
+4. Downloads **Strata-Music.ipa** to your Downloads folder.
 5. Installs **iloader** for putting SideStore on your iPhone (one time only).
-6. Prints a QR code and the install link, and saves **AuraOS-Music-iPhone-setup.txt** in Downloads.
+6. Prints a QR code and the install link, and saves **Strata-Music-iPhone-setup.txt** in Downloads.
 
 If the build sits at "build (ID …)" for a while, it's waiting in line for a free Mac at GitHub; it starts on its own.
 
